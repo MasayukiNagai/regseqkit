@@ -1,0 +1,31 @@
+[project]
+name = "regseqkit"
+version = "0.1.0"
+description = "Tools for regulatory sequence analysis, interpretation, and optimization"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "scipy>=1.18.1",
+    "torch>=2.13.0",
+    "tangermeme>=1.4.1",
+    "matplotlib>=3.11.1",
+    "fast-logomaker",
+    "pyBigWig>=0.3.25",
+    "pyfaidx",
+    "h5py",
+    "tqdm",
+    "ledidi>=2.2.0",
+    "cherimoya>=0.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
