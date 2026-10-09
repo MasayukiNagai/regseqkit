@@ -37,7 +37,6 @@ __all__ = [
     "config",
     "design",
     "figures",
-    "greedy_analysis",
     "io",
     "metrics",
     "mutagenesis",

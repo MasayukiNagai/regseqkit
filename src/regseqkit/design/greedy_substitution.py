@@ -1,17 +1,13 @@
-"""Greedy single-base search, per-round evaluations, and history aggregation."""
+"""Greedy single-base search and per-round evaluations."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import math
-from pathlib import Path
-import re
 
-import numpy as np
 import torch
 
-from ..io import add_extension, load_arrays, save_arrays
 from ..mutagenesis import _get_positions, single_site_saturation_mutagenesis
 from ._validation import _validate_design, _validate_loss
 from .objectives import ObjectiveProtocol
@@ -90,16 +86,16 @@ def greedy_substitution(
         only when improvement is strictly greater than this value.
     device
         Torch device string used for model predictions.
-    on_iteration
-        Optional callback receiving a :class:`GreedyIteration` after each
-        evaluation, including a rejected proposal that ends the search.
-        Records contain detached CPU tensors for the pre-edit sequence,
-        current scores/loss, all candidate scores/losses, and the selected
-        state, plus the accepted mutation, acceptance decision, and stop
-        reason. No extra
-        evaluation occurs after the iteration budget is exhausted. An empty
-        position selection or zero budget produces no callback records. Callback
-        exceptions propagate to the caller.
+    on_iteration : Callable[[GreedyIteration], None] or None, default None
+        Called after each evaluated round, including a rejected final proposal.
+        Receives a GreedyIteration with detached CPU tensors and the selection
+        outcome. Empty positions or a zero budget produce no records; no extra
+        evaluation follows budget exhaustion. Callback exceptions propagate.
+        To collect history::
+            history = []
+            designed = greedy_substitution(
+                module, template, objective, on_iteration=history.append
+            )
 
     Returns
     -------
@@ -207,151 +203,3 @@ def greedy_substitution(
             break
     _validate_design(template, current, editable)
     return current
-
-
-_ROUND_FIELDS = {
-    "iteration",
-    "baseline_loss",
-    "position",
-    "base",
-    "accepted",
-    "result_loss",
-    "stop_reason",
-}
-
-
-def aggregate_greedy_history(history_dir: str | Path, destination: str | Path) -> Path:
-    """Save one NPZ/JSON pair for a single objective/template search.
-
-    Parameters
-    ----------
-    history_dir : str or pathlib.Path
-        Directory containing zero-based iteration.<round>.npz/JSON pairs.
-        Completed rounds must be contiguous. Incomplete trailing pairs from
-        an interrupted write are ignored; malformed complete pairs raise.
-    destination : str or pathlib.Path
-        Output artifact stem, without an extension. Existing aggregates at
-        this stem are replaced, so aggregation can be repeated independently
-        of optimization. The per-round source files are retained.
-
-    Returns
-    -------
-    pathlib.Path
-        Written NPZ path. Candidate arrays have a leading round axis, followed
-        by (positions, 4, scorers) for scores or (positions, 4) for
-        losses. Sequence arrays are (rounds, 4, length) and baseline/result
-        scores are (rounds, scorers). Positions and shared provenance are
-        stored once. Scalar losses, proposed edits, acceptance, and stop
-        reasons are stored as round-indexed arrays. Empty stop reasons mean
-        the search continued. The JSON marks interrupted trajectories with
-        complete=false.
-
-    Raises
-    ------
-    ValueError
-        If there are no complete rounds, a round is missing, or round indices,
-        positions, shapes, or shared provenance disagree.
-    """
-    history_dir = Path(history_dir)
-    pairs: dict[int, Path] = {}
-    for path in history_dir.iterdir():
-        match = re.fullmatch(r"iteration\.(\d+)\.npz", path.name)
-        if match:
-            iteration = int(match[1])
-            if iteration in pairs:
-                raise ValueError(f"duplicate iteration {iteration} in {history_dir}")
-            pairs[iteration] = path
-    complete = sorted(
-        iteration
-        for iteration, path in pairs.items()
-        if add_extension(path.with_suffix(""), ".json").is_file()
-    )
-    if not complete:
-        raise ValueError(f"no complete greedy rounds in {history_dir}")
-    if complete != list(range(len(complete))):
-        raise ValueError(f"greedy rounds must be contiguous from zero in {history_dir}")
-
-    collected: dict[str, list[np.ndarray]] = {
-        name: []
-        for name in (
-            "sequence",
-            "baseline_scores",
-            "candidate_scores",
-            "candidate_losses",
-            "result",
-            "result_scores",
-            "baseline_loss",
-            "result_loss",
-            "edit_positions",
-            "edit_bases",
-            "accepted",
-            "stop_reasons",
-        )
-    }
-    shared = None
-    positions = None
-    shapes = None
-    last_reason = None
-    for iteration in complete:
-        arrays, metadata = load_arrays(pairs[iteration])
-        if metadata["iteration"] != iteration:
-            raise ValueError(f"iteration metadata disagrees with filename: {pairs[iteration]}")
-        provenance = {key: value for key, value in metadata.items() if key not in _ROUND_FIELDS}
-        if shared is None:
-            shared = provenance
-            positions = arrays["positions"]
-            shapes = {
-                name: arrays[name].shape
-                for name in (
-                    "sequence",
-                    "baseline_scores",
-                    "candidate_scores",
-                    "candidate_losses",
-                    "result",
-                    "result_scores",
-                )
-            }
-        elif provenance != shared or not np.array_equal(arrays["positions"], positions):
-            raise ValueError(
-                f"greedy rounds have different provenance or positions: {pairs[iteration]}"
-            )
-        for name in (
-            "sequence",
-            "baseline_scores",
-            "candidate_scores",
-            "candidate_losses",
-            "result",
-            "result_scores",
-        ):
-            value = arrays[name]
-            if value.shape != shapes[name]:
-                raise ValueError(f"greedy rounds have different {name} shapes: {pairs[iteration]}")
-            if name in {"sequence", "baseline_scores", "result", "result_scores"}:
-                if value.shape[0] != 1:
-                    raise ValueError(
-                        f"greedy history must describe one template: {pairs[iteration]}"
-                    )
-                value = value[0]
-            collected[name].append(value)
-        for name in ("baseline_loss", "result_loss", "accepted"):
-            collected[name].append(np.asarray(metadata[name]))
-        collected["edit_positions"].append(np.asarray(metadata["position"], dtype=np.int64))
-        collected["edit_bases"].append(np.asarray(metadata["base"], dtype=np.int64))
-        last_reason = metadata["stop_reason"]
-        collected["stop_reasons"].append(np.asarray(last_reason or ""))
-        if last_reason is not None and iteration != complete[-1]:
-            raise ValueError(f"greedy history has rounds after its stop reason: {pairs[iteration]}")
-
-    aggregated = {name: np.stack(values) for name, values in collected.items()}
-    aggregated["iterations"] = np.asarray(complete, dtype=np.int64)
-    aggregated["positions"] = positions
-    summary = dict(
-        shared,
-        kind="greedy_trajectory",
-        n_rounds=len(complete),
-        n_accepted=int(aggregated["accepted"].sum()),
-        complete=last_reason in {"max_iter", "insufficient_improvement"},
-        stop_reason=last_reason,
-        source_history=str(history_dir.resolve()),
-    )
-    return save_arrays(destination, aggregated, summary)
