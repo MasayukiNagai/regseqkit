@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-from tangermeme.predict import predict
+from ..inference import predict
 
 from .objectives import ObjectiveProtocol
 from ._validation import _validate_design, _validate_loss

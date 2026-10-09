@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from cherimoya.io import normalize_signal_groups
 
 
 def build_jobs(
@@ -37,10 +38,10 @@ def build_jobs(
         Collection directory. Specs land in ``configs/`` beside a ``jobs.txt``.
     fasta, loci
         Absolute reference and peak-BED paths.
-    tracks
-        ``{"track": name, "signal": absolute path}`` rows in output order. Extra
-        keys are carried through to the spec, so a project's own metadata
-        columns survive.
+    tracks : Sequence[Mapping[str, Any]]
+        Rows with track and signal keys in count-output order. A signal is an
+        absolute path or a list of paths for a grouped output, such as a
+        stranded pair. Extra metadata keys are preserved.
     splits
         ``train``, ``valid``, and ``test`` chromosome lists, which must not
         overlap.
@@ -73,7 +74,7 @@ def build_jobs(
         are invalid, the mode is unknown, or two jobs would collide on a name.
     """
     names = [r["track"] for r in tracks]
-    if not names or len(set(names)) != len(names):
+    if not names or any(not name for name in names) or len(set(names)) != len(names):
         raise ValueError("track names must be nonempty and unique")
     chroms = [c for split in ("train", "valid", "test") for c in splits[split]]
     if len(chroms) != len(set(chroms)):
@@ -116,7 +117,7 @@ def build_jobs(
                         validation_chroms=splits["valid"],
                         test_chroms=splits["test"],
                         tracks=group,
-                        signal_groups=[1] * len(group),
+                        signal_groups=normalize_signal_groups([r["signal"] for r in group])[1],
                         fit_parameters=params,
                         source_config=str(source) if source else None,
                     )

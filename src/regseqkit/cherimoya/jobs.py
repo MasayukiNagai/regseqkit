@@ -130,7 +130,7 @@ def load_job(path: Path, run_root: Path | None, checkpoint: str = "best") -> Job
         Directory holding run subdirectories, defaulting to ``../runs`` beside
         the spec.
     checkpoint
-        ``"best"`` for ``<name>.torch``, anything else for ``<name>.final.torch``.
+        "best" selects <name>.torch; "final" selects <name>.final.torch.
 
     Returns
     -------
@@ -144,6 +144,8 @@ def load_job(path: Path, run_root: Path | None, checkpoint: str = "best") -> Job
         If the spec's tracks and the fit JSON's signal groups do not correspond
         one to one, in the same order.
     """
+    if checkpoint not in ("best", "final"):
+        raise ValueError("checkpoint must be best or final")
     path = Path(path)
     spec = json.loads(path.read_text())
     name = str(spec["name"])
@@ -154,12 +156,6 @@ def load_job(path: Path, run_root: Path | None, checkpoint: str = "best") -> Job
     if not fit_path.is_file():
         raise FileNotFoundError(f"no fit JSON at {fit_path}")
     fit = json.loads(fit_path.read_text())
-
-    # The training CLI writes every key, but a hand-made fit JSON need not, so
-    # fall back to Cherimoya's defaults. The model's own trimming turns the
-    # fallback into an checkpoint validation rather than a silent guess.
-    fit.setdefault("in_window", 2114)
-    fit.setdefault("out_window", 1000)
 
     suffix = ".torch" if checkpoint == "best" else ".final.torch"
     model_path = run_dir / f"{name}{suffix}"
@@ -175,7 +171,10 @@ def load_job(path: Path, run_root: Path | None, checkpoint: str = "best") -> Job
             "is one row per group, named after a track, so the two must "
             "correspond one to one."
         )
-    spec_signals = [str(Path(record["signal"]).resolve()) for record in records]
+    flat_spec_signals, spec_groups = normalize_signal_groups([r["signal"] for r in records])
+    if spec_groups != group_sizes:
+        raise ValueError(f"{name}: job and fit signal groups differ")
+    spec_signals = [str(Path(signal).resolve()) for signal in flat_spec_signals]
     if spec_signals != [str(Path(s).resolve()) for s in signals]:
         raise ValueError(
             f"{name}: the job spec's track signals are not the fit JSON's "
