@@ -11,11 +11,16 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import torch
-from cherimoya import Cherimoya
-from cherimoya.io import channel_permutation_from_groups, normalize_signal_groups
-from cherimoya.wrappers import ControlWrapper, LogCountWrapper
-from tangermeme.predict import predict
+try:
+    from cherimoya import Cherimoya
+    from cherimoya.io import channel_permutation_from_groups, normalize_signal_groups
+    from cherimoya.wrappers import ControlWrapper, LogCountWrapper
+except ModuleNotFoundError as exc:
+    if exc.name == "cherimoya":
+        raise ImportError("Cherimoya helpers require the optional regseqkit[cherimoya] dependency") from exc
+    raise
 
+from tangermeme.predict import predict
 from ..wrappers import log1p_to_counts
 
 

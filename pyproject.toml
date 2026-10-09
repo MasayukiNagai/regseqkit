@@ -16,9 +16,12 @@ dependencies = [
     "pyfaidx",
     "h5py",
     "tqdm",
-    "ledidi>=2.2.0",
-    "cherimoya>=0.2.0",
 ]
+
+[project.optional-dependencies]
+ledidi = ["ledidi>=2.2.0"]
+cherimoya = ["cherimoya>=0.2.0"]
+motifs = ["modisco-lite>=2.4.0"]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -26,6 +29,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+regseqkit = { path = "regseqkit", editable = true }
+torch = { index = "pytorch-cu126" }
+fast-logomaker = { git = "https://github.com/MasayukiNagai/fast-logomaker", tag = "combined-2026-10-07" }
 
 [tool.ruff]
 line-length = 100

@@ -1,11 +1,7 @@
 """Export both TF-MoDISco pattern signs and zero-based seqlet coordinates.
 
-Two things upstream will not do. ``modiscolite.io``'s MEME exporter visits only
-``pos_patterns``, so a negative pattern silently disappears; and its BED
-exporter adds one to every start. What is *not* local is the window-to-genome
-arithmetic: Tangermeme's ``example_to_fasta_coords`` recenters each locus and
-offsets the span vectorized, so this module only enumerates patterns and their
-signs.
+Both positive and negative patterns are retained. Seqlet coordinates are
+offset from centered attribution windows and exported as zero-based intervals.
 """
 
 from __future__ import annotations
@@ -16,8 +12,6 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pandas as pd
-
-from tangermeme.utils import example_to_fasta_coords
 
 
 _CATEGORIES = ("pos_patterns", "neg_patterns")
@@ -99,7 +93,12 @@ def export_matrices(h5_path: str | Path, prefix: str | Path) -> None:
     prefix
         Output stem. Patterns are named ``<category>.<pattern>`` in both files.
     """
-    from modiscolite.meme_writer import MEMEWriter, MEMEWriterMotif
+    try:
+        from modiscolite.meme_writer import MEMEWriter, MEMEWriterMotif
+    except ModuleNotFoundError as exc:
+        if exc.name == "modiscolite":
+            raise ImportError("MEME export requires the optional regseqkit[motifs] dependency") from exc
+        raise
 
     writer = MEMEWriter(
         memesuite_version="5",
@@ -188,7 +187,14 @@ def export_seqlets(
         pd.DataFrame().to_csv(output_path, sep="\t", index=False, header=False)
         return
     spans = pd.concat(records, ignore_index=True)
-    coords = example_to_fasta_coords(spans, loci, window=window_size)
+    indices = spans["example"].to_numpy(dtype=np.int64)
+    selected = loci.iloc[indices]
+    offsets = ((selected["start"].to_numpy() + selected["end"].to_numpy()) // 2
+               - window_size // 2)
+    coords = spans.copy()
+    coords["chrom"] = selected["chrom"].to_numpy()
+    coords["start"] = offsets + spans["start"].to_numpy()
+    coords["end"] = offsets + spans["end"].to_numpy()
     coords[["chrom", "start", "end", "name", "score", "strand"]].to_csv(
         output_path, sep="\t", index=False, header=False
     )

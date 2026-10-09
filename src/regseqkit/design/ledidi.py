@@ -83,8 +83,7 @@ def ledidi_design(
         from ledidi import ledidi
     except ImportError as exc:
         raise RuntimeError(
-            "Ledidi is not installed; install the declared design "
-            "dependency before running this method"
+            "Ledidi design requires the optional regseqkit[ledidi] dependency"
         ) from exc
 
     # Ledidi calls output_loss(predicted, desired) and wants a scalar.

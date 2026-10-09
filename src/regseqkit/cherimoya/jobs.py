@@ -236,7 +236,7 @@ def project_blocks(job: Job) -> dict[str, list[dict]]:
     entry carrying the selected checkpoint, the fit JSON and the outputs in
     order. Merged over a project's settings, as
     ``config.settings | project_blocks(job)``, the run then loads through
-    the project's us_responsive.inference.load_models like any configured model. Blocks
+    the project's helpers.inference.load_models like any configured model. Blocks
     that name outputs, such as ``scorers``, are the caller's to reconcile.
 
     Parameters
@@ -247,7 +247,7 @@ def project_blocks(job: Job) -> dict[str, list[dict]]:
     Returns
     -------
     dict
-        ``tracks`` and ``models``, in the schema :mod:`regseqkit.config` reads.
+        ``tracks`` and ``models``, for the project configuration loader.
     """
     tracks, offset = [], 0
     for name, size in zip(job.tracks, job.signal_groups):

@@ -132,8 +132,11 @@ class WeightedObjective:
         objectives = tuple(self.objectives)
         if not objectives:
             raise ValueError("a weighted objective needs at least one sub-objective")
-        weights = ((1.0,) * len(objectives) if self.weights is None
-                   else tuple(float(weight) for weight in self.weights))
+        weights = (
+            (1.0,) * len(objectives)
+            if self.weights is None
+            else tuple(float(weight) for weight in self.weights)
+        )
         if len(weights) != len(objectives):
             raise ValueError("weights must contain one weight per sub-objective")
         if not all(np.isfinite(weight) and weight >= 0 for weight in weights):
@@ -174,9 +177,7 @@ class WeightedObjective:
             Weighted sum of sub-objective losses, without a batch reduction.
         """
         if scores.ndim != 2 or scores.shape[1] != len(self.scorers):
-            raise ValueError(
-                f"expected (N, {len(self.scorers)}) scores, got {tuple(scores.shape)}"
-            )
+            raise ValueError(f"expected (N, {len(self.scorers)}) scores, got {tuple(scores.shape)}")
         total = scores.new_zeros(len(scores))
         for sub_objective, weight, indices in zip(
             self.objectives, self.weights, self._scorer_indices

@@ -3,8 +3,13 @@
 import unittest
 
 import torch
-import cherimoya.cherimoya
-from cherimoya.losses import _mixture_loss
+try:
+    import cherimoya.cherimoya
+    from cherimoya.losses import _mixture_loss
+except ModuleNotFoundError as exc:
+    if exc.name == "cherimoya":
+        raise unittest.SkipTest("requires regseqkit[cherimoya]") from exc
+    raise
 
 from regseqkit.cherimoya.contrast_loss import install, read_block, with_contrast
 

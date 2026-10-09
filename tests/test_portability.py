@@ -34,7 +34,8 @@ from regseqkit.mutagenesis import single_site_saturation_mutagenesis, ssm_attrib
 from regseqkit.design import Objective, WeightedObjective, greedy_design
 from regseqkit.io import save_arrays, validate_examples
 from regseqkit.scoring import ScalarScorer, ScoreModule
-from regseqkit.config import identity_scorers
+from regseqkit.scoring import identity_scorers
+from regseqkit.config import build_objectives, build_scorers
 
 class Toy(torch.nn.Module):
     def forward(self, X):
@@ -59,9 +60,11 @@ reference, mutants = single_site_saturation_mutagenesis(
 attr = ssm_attribution(reference, mutants)
 np.savez_compressed("out/scorers.test.attr.npz", attr[:, 0].numpy())
 
-scorer = ScalarScorer([1.0, 0.0])
+scorer = build_scorers([dict(name="A", weights={"A": 1.0})], outputs)["A"]
 single = ScoreModule(model, [scorer])
-objective = Objective(scorer, "maximize")
+objective = build_objectives(
+    [dict(name="increase_A", scorer="A", mode="maximize")], {"A": scorer}
+)["increase_A"]
 designed = greedy_design(single, X[:1], objective, positions=range(2, 6),
                          max_iter=3)
 np.savez_compressed("out/designs.npz", onehot=designed.numpy())
@@ -79,5 +82,5 @@ print("ok")
             with np.load(root / "out/designs.npz") as handle:
                 self.assertEqual(int(handle["onehot"][:, 0].sum()), 3)
             # The core must not import the project package, even transitively.
-            self.assertNotIn("us_responsive", result.stdout + result.stderr)
+            self.assertNotIn("helpers", result.stdout + result.stderr)
 

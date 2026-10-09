@@ -8,9 +8,8 @@ Three input sources, three readers, all returning numpy:
   design templates arrive.
 - :func:`read_npz` reads prepared examples, for a model with no genome behind it.
 
-Nothing here imports torch or tangermeme. The conversion to tensors happens at
-the model boundary in :mod:`regseqkit.config`, which is what keeps a stage that
-only reads coordinates cheap.
+Nothing here imports torch or tangermeme. Callers convert arrays to tensors at
+the model boundary, which keeps a stage that only reads coordinates cheap.
 
 Why this is owned rather than wrapped
 -------------------------------------
@@ -44,7 +43,8 @@ ALPHABET = "ACGT"
 
 # A base outside the alphabet, such as an ambiguous IUPAC code, becomes an
 # all-zero column rather than an error, matching what tangermeme does with its
-# ``ignore`` list. The locus is kept; `drop_ambiguous` is what removes it,
+# ``ignore`` list.
+# The locus is kept; `drop_ambiguous` is what removes it,
 # because a column with no reference base is one in-silico mutagenesis cannot
 # mutate.
 
