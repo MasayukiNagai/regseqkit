@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import torch
 from tqdm import trange
-from tangermeme.predict import predict
+from .inference import predict
 
 
 def _validate_predictions(
@@ -70,7 +70,7 @@ def single_site_saturation_mutagenesis(
     ----------
     model : torch.nn.Module
         PyTorch model returning a finite tensor of shape (batch, outputs)
-        with at least one output. Evaluated through tangermeme.predict.
+        with at least one output. Evaluated through regseqkit.inference.predict.
         To select specific output tracks or reduce model outputs, pass a
         wrapped model whose forward method performs that selection or
         reduction and returns the required (batch, outputs) tensor.
@@ -88,9 +88,9 @@ def single_site_saturation_mutagenesis(
     batch_size : int, default 128
         Positive integer limiting the inference batch size. All three
         alternative bases at every requested position are materialized on CPU
-        for one reference sequence at a time, then passed to tangermeme.predict.
+        for one reference sequence at a time, then passed to regseqkit.inference.predict.
     device : str, default "cpu"
-        Inference device passed to tangermeme.predict.
+        Inference device passed to regseqkit.inference.predict.
     verbose : bool, default False
         Show a progress bar over input sequences when True. The bar advances
         after all mutations for each sequence are evaluated.
