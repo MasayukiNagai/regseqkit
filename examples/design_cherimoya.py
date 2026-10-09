@@ -14,8 +14,8 @@ checkpoint = "path/to/model.pt"  # Replace with your Cherimoya checkpoint.
 model = Cherimoya.load(checkpoint, device=device, compile=False).float().eval()
 
 # Cherimoya returns (profile_logits, log1p_counts).
-# ControlWrapper supplies zero control tracks when the model requires them.
-wrapped_model = LogCountWrapper(ControlWrapper(model))
+# Cherimoya's ControlWrapper supplies zeros when required controls are omitted.
+wrapped_model = LogCountWrapper(ControlWrapper(model)).eval()
 
 # 2. Define a scorer for the count output.
 # For a single-output model, use [1.0]. For multiple outputs, supply one
@@ -29,7 +29,7 @@ score_module = ScoreModule(wrapped_model, objective.scorers)
 # 4. Prepare a template sequence to edit.
 onehot_encoder = OneHotEncoder()
 template_sequence = "ACGT" * 50  # Replace with a sequence of the model's input length.
-template_onehot = torch.from_numpy(onehot_encoder.to_onehot([template_sequence])).float()
+template_onehot = onehot_encoder.to_onehot([template_sequence]).float()
 
 # 5. Run the design algorithm.
 designed = greedy_substitution(
@@ -42,10 +42,10 @@ designed = greedy_substitution(
     device=device,
 )
 
-# 6. Evaluate the design in count units.
+# 6. Evaluate the design's log1p-count score.
 with torch.no_grad():
-    print("Before counts:", score_module(template_onehot.to(device)).cpu())
-    print("After counts:", score_module(designed.to(device)).cpu())
+    print("Before log1p-count score:", score_module(template_onehot.to(device)).cpu())
+    print("After log1p-count score:", score_module(designed.to(device)).cpu())
 
-designed_sequence = onehot_encoder.from_onehot(designed[0].cpu().numpy())
+designed_sequence = onehot_encoder.from_onehot(designed[0])
 print("Designed sequence:", designed_sequence)

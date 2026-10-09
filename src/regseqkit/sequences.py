@@ -1,80 +1,49 @@
-"""Reading sequence and signal: from a genome, from a FASTA, or from an NPZ.
-
-Three input sources, three readers, all returning numpy:
-
-- :func:`extract_loci_with_coords` centers a window on each locus of a BED and
-  reads one-hot sequence plus one signal track per bigWig.
-- :func:`read_fasta` reads sequences already cut to a fixed width, which is how
-  design templates arrive.
-- :func:`read_npz` reads prepared examples, for a model with no genome behind it.
-
-Nothing here imports torch or tangermeme. Callers convert arrays to tensors at
-the model boundary, which keeps a stage that only reads coordinates cheap.
-
-Why this is owned rather than wrapped
--------------------------------------
-``tangermeme.io.extract_loci`` returns sequences and a boolean mask but never
-coordinates, and the mask indexes the rows it *read* rather than the rows it
-returned. Recovering which locus produced example 7 therefore meant rebuilding
-the input frame through tangermeme's private ``_interleave_loci``. Returning the
-surviving coordinates directly removes that, and encoding the whole batch
-through one lookup table rather than one call per locus is faster besides.
-
-**Cherimoya trains through tangermeme's extractor, not this one.** That is why
-the name differs: the two are not interchangeable, and the reported evaluation
-numbers were computed on the loci tangermeme's filters kept. The drop rules here
-reproduce those exactly, and ``tests`` pins that with a parity check.
-"""
-
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
 import pyBigWig
+import torch
 from pyfaidx import Fasta
 from tqdm import tqdm
 
 
 ALPHABET = "ACGT"
-
-# A base outside the alphabet, such as an ambiguous IUPAC code, becomes an
-# all-zero column rather than an error, matching what tangermeme does with its
-# ``ignore`` list.
-# The locus is kept; `drop_ambiguous` is what removes it,
-# because a column with no reference base is one in-silico mutagenesis cannot
-# mutate.
-
+COMPLEMENT_MAP = {"A": "T", "C": "G", "G": "C", "T": "A"}
 BED_COLUMNS = ["chrom", "start", "end"]
 
 
 class OneHotEncoder:
-    """One-hot encoder and decoder for DNA sequences.
+    """Encode DNA strings as tensors and decode tensors into strings.
 
-    Encoding is table-driven and batched: characters are mapped to indices
-    through a 128-entry lookup and the whole batch is built with one fancy
-    index, rather than one call per sequence.
+    String encoding uses a batched NumPy lookup internally, then returns a
+    CPU tensor. Decoding accepts CPU or GPU tensors; only the base indices and
+    unknown-position mask are transferred to the CPU to construct strings.
+    Bases outside the alphabet become all-zero positions; locus extraction
+    can remove sequences containing them with drop_ambiguous=True.
 
     Parameters
     ----------
-    alphabet
-        Sequence alphabet. Default ``"ACGT"``.
-    channel_axis
-        Axis the alphabet occupies in the encoding: ``1`` for ``(N, 4, L)``,
-        ``-1`` or ``2`` for ``(N, L, 4)``.
-    dtype
-        Encoding dtype. ``int8`` matches tangermeme and is four times smaller
-        than float32, which matters at genome scale.
+    alphabet : str, default "ACGT"
+        Channel order of the sequence alphabet.
+    channel_axis : int, default 1
+        Channel axis for batched encodings: 1 gives (N, channels, length);
+        -1 or 2 gives (N, length, channels). Single-sequence encodings drop
+        the batch axis. Decoding uses this setting rather than guessing.
+    dtype : torch.dtype, default torch.int8
+        Output tensor dtype. Int8 stores hard encodings compactly; callers
+        can request torch.float32 or convert before model inference.
     """
 
     def __init__(
         self,
         alphabet: str = ALPHABET,
         channel_axis: int = 1,
-        dtype: Any = np.int8,
+        dtype: torch.dtype = torch.int8,
     ) -> None:
         if channel_axis not in (1, -1, 2):
             raise ValueError("channel_axis must be 1, -1, or 2")
@@ -84,26 +53,27 @@ class OneHotEncoder:
         self.channel_axis = channel_axis
         self.dtype = dtype
 
-        # ASCII to index; 255 marks a character outside the alphabet.
+        # ASCII lookup; 255 marks a character outside the alphabet.
         self._lookup = np.full(256, 255, dtype=np.uint8)
         for index, character in enumerate(self.alphabet):
             self._lookup[ord(character)] = index
         self._reverse = np.frombuffer(self.alphabet.encode("ascii"), dtype="S1")
 
-    def to_onehot(self, seqs: str | Sequence[str]) -> np.ndarray:
-        """Encode one sequence or a batch of equal-length sequences.
+    def to_onehot(self, seqs: str | Sequence[str]) -> torch.Tensor:
+        """Encode strings, padding shorter sequences with all-zero columns.
 
         Parameters
         ----------
-        seqs
-            A sequence, or sequences which are padded to the longest with
-            all-zero columns.
+        seqs : str or Sequence[str]
+            Single sequence or a nonempty batch. Bases outside the alphabet
+            become all-zero positions. Strings are converted to uppercase.
 
         Returns
         -------
-        ndarray
-            ``(N, 4, L)`` or ``(N, L, 4)`` per `channel_axis`. A single input
-            sequence drops the batch axis.
+        onehot : torch.Tensor
+            CPU tensor in the configured dtype and channel order. Shape is
+            (N, channels, length) or (N, length, channels), depending on
+            channel_axis. A single input string drops the batch axis.
         """
         single = isinstance(seqs, str)
         seqs = [seqs] if single else list(seqs)
@@ -111,33 +81,183 @@ class OneHotEncoder:
             raise ValueError("no sequences to encode")
 
         width = max(len(s) for s in seqs)
-        packed = np.array([s.upper() for s in seqs], dtype=f"S{width}")
-        # Null padding reads as 255 below, so short sequences zero-fill.
-        codes = self._lookup[packed.view(np.uint8).reshape(len(seqs), width)]
-
-        unknown = codes == 255
-        onehot = np.eye(self.vocab_size, dtype=self.dtype)[np.where(unknown, 0, codes)]
-        if unknown.any():
-            onehot[unknown] = 0
+        if width == 0:
+            onehot = torch.zeros(len(seqs), 0, self.vocab_size, dtype=self.dtype)
+        else:
+            packed = np.array([s.upper() for s in seqs], dtype=f"S{width}")
+            codes = self._lookup[packed.view(np.uint8).reshape(len(seqs), width)]
+            unknown = codes == 255
+            encoded = np.eye(self.vocab_size, dtype=np.int8)[np.where(unknown, 0, codes)]
+            encoded[unknown] = 0
+            onehot = torch.from_numpy(encoded).to(dtype=self.dtype)
         if self.channel_axis == 1:
-            onehot = onehot.transpose(0, 2, 1)
+            onehot = onehot.transpose(1, 2)
         return onehot[0] if single else onehot
 
-    def from_onehot(self, onehot: np.ndarray) -> str | list[str]:
-        """Decode an encoding back to sequences, with all-zero columns as ``N``."""
+    def from_onehot(self, onehot: torch.Tensor) -> str | list[str]:
+        """Decode tensors, replacing undetermined positions with N.
+
+        Parameters
+        ----------
+        onehot : torch.Tensor
+            Single or batched encoding in the configured channel layout.
+            May be on any device and may require gradients. Positions whose
+            maximum channel value is not 1 decode as N.
+
+        Returns
+        -------
+        sequences : str or list[str]
+            String for a single encoding, otherwise one string per example.
+            Decoding is nondifferentiable and does not modify the input.
+        """
+        if onehot.ndim not in (2, 3):
+            raise ValueError("onehot must contain a single sequence or a batch")
         single = onehot.ndim == 2
-        if single:
-            onehot = onehot[np.newaxis]
-        values = onehot.transpose(0, 2, 1) if onehot.shape[1] == self.vocab_size else onehot
+        values = onehot.unsqueeze(0) if single else onehot
+        if self.channel_axis == 1:
+            values = values.transpose(1, 2)
+        if values.shape[-1] != self.vocab_size:
+            raise ValueError("the configured channel axis must match the alphabet size")
+        if values.shape[1] == 0:
+            return "" if single else [""] * len(values)
 
-        characters = self._reverse[np.argmax(values, axis=-1)]
-        undetermined = values.max(axis=-1) != 1
-        if undetermined.any():
-            characters = characters.copy()
-            characters[undetermined] = b"N"
-
-        decoded = [s.decode("ascii") for s in characters.view(f"S{characters.shape[1]}").ravel()]
+        values = values.detach()
+        indices = values.to(torch.uint8).argmax(-1) if values.dtype == torch.bool else values.argmax(-1)
+        characters = self._reverse[indices.cpu().numpy()].copy()
+        characters[(values.amax(-1) != 1).cpu().numpy()] = b"N"
+        decoded = [
+            row.tobytes().decode("ascii") for row in characters
+        ]
         return decoded[0] if single else decoded
+
+
+def reverse_complement(
+    seq: str | torch.Tensor,
+    complement_map: Mapping[str, str] | None = None,
+) -> str | torch.Tensor:
+    """Reverse a DNA sequence and replace each base with its complement.
+
+    Parameters
+    ----------
+    seq : str or torch.Tensor, shape (..., alphabet_size, length)
+        String or encoded sequence. Tensors may contain one sequence, batches,
+        or additional leading dimensions. Channels occupy the penultimate axis
+        and positions the last axis. Soft encodings are also supported.
+    complement_map : Mapping[str, str] or None, default None
+        Base-to-complement mapping. None uses COMPLEMENT_MAP, whose keys are
+        in ACGT order. For tensors, key order specifies the input channel order,
+        so an ATCG encoding uses {"A": "T", "T": "A", "C": "G", "G": "C"}.
+        Each complementary base must also be a key. Strings use the mapping
+        directly; N is preserved without requiring an entry. Case is preserved
+        and lowercase bases need corresponding mapping entries.
+
+    Returns
+    -------
+    complemented : str or torch.Tensor
+        Reverse complement with the same type and shape as seq. Tensors retain
+        dtype, device, and gradients. The input is not modified.
+    """
+    mapping = COMPLEMENT_MAP if complement_map is None else complement_map
+    if isinstance(seq, str):
+        from tangermeme.utils import reverse_complement as reverse_complement_string
+
+        return reverse_complement_string(seq, complement_map=dict(mapping))
+
+    if not isinstance(seq, torch.Tensor):
+        raise TypeError("seq must be a string or torch.Tensor")
+    if seq.ndim < 2 or seq.shape[-2] != len(mapping):
+        raise ValueError("the penultimate tensor axis must match the complement-map channel count")
+    alphabet = list(mapping)
+    indices = torch.tensor(
+        [alphabet.index(mapping[base]) for base in alphabet], device=seq.device,
+        dtype=torch.long,
+    )
+    return seq.index_select(-2, indices).flip(-1)
+
+
+def read_fasta(path: str | Path, length: int | None = None) -> tuple[torch.Tensor, np.ndarray]:
+    """Read a FASTA as one-hot sequences and their record names.
+
+    A base outside the alphabet becomes an all-zero column, as everywhere else
+    here, rather than an error. A caller that cannot tolerate one, such as
+    design, asserts hard one-hot itself and says so in its own terms.
+
+    Parameters
+    ----------
+    path
+        FASTA to read.
+    length
+        Required record length, when the caller has one. Design templates must
+        carry the complete input window including the model's flanks, because
+        no padding is added: a padded flank is context the model would read as
+        real sequence.
+
+    Returns
+    -------
+    onehot : torch.Tensor, shape (N, 4, length)
+        CPU one-hot sequences in ACGT order.
+    names : ndarray
+        Record names, in file order.
+
+    Raises
+    ------
+    ValueError
+        If the file is empty, or a record is not `length` long.
+    """
+    with Fasta(str(path), as_raw=True, sequence_always_upper=True) as fasta:
+        names = list(fasta.keys())
+        sequences = [fasta[name][:] for name in names]
+
+    if not sequences:
+        raise ValueError(f"{path}: no records")
+    if length is not None:
+        wrong = [n for n, s in zip(names, sequences) if len(s) != length]
+        if wrong:
+            raise ValueError(
+                f"{path}: {len(wrong)} record(s) are not {length} bp, first {wrong[0]!r}"
+            )
+    return OneHotEncoder().to_onehot(sequences), np.asarray(names)
+
+
+def read_npz(path: str | Path) -> tuple[torch.Tensor, dict[str, np.ndarray], list[str] | None]:
+    """Read prepared examples from an NPZ, for a model with no genome.
+
+    The sibling of :func:`read_fasta` and of
+    :func:`extract_loci_with_coords`: three input sources, three readers.
+
+    Parameters
+    ----------
+    path
+        NPZ holding ``onehot`` and ``ids``, optionally ``output_names``, plus
+        any example-indexed arrays to carry through, typically ``observed``.
+
+    Returns
+    -------
+    onehot : torch.Tensor, shape (N, 4, length)
+        CPU one-hot sequences in ACGT order.
+    arrays : dict of ndarray
+        Every other array in the file, all example-indexed, ``ids`` included.
+    outputs : list of str or None
+        The file's ``output_names``. Kept out of `arrays` because it indexes
+        outputs rather than examples, and everything in `arrays` must share the
+        example axis.
+
+    Raises
+    ------
+    ValueError
+        If ``onehot`` or ``ids`` is absent, or the encoding is not
+        ``(N, 4, length)``.
+    """
+    with np.load(path, allow_pickle=False) as handle:
+        arrays = dict(handle)
+
+    if "onehot" not in arrays or "ids" not in arrays:
+        raise ValueError(f"{path}: prepared examples need 'onehot' and 'ids' arrays")
+    onehot = arrays.pop("onehot")
+    if onehot.ndim != 3 or onehot.shape[1] != len(ALPHABET):
+        raise ValueError("prepared 'onehot' must be (examples, 4, length)")
+    names = arrays.pop("output_names", None)
+    return torch.from_numpy(onehot), arrays, (None if names is None else [str(n) for n in names])
 
 
 class Loci(NamedTuple):
@@ -145,8 +265,8 @@ class Loci(NamedTuple):
 
     Attributes
     ----------
-    onehot
-        ``(N, 4, in_window)`` one-hot ACGT.
+    onehot : torch.Tensor, shape (N, 4, in_window)
+        CPU int8 one-hot sequences in ACGT order.
     signals
         ``(N, tracks, out_window)`` signal, or None when no bigWigs were given.
     coords
@@ -154,7 +274,7 @@ class Loci(NamedTuple):
         ``source_row``: the row of the input frame each example came from.
     """
 
-    onehot: np.ndarray
+    onehot: torch.Tensor
     signals: np.ndarray | None
     coords: pd.DataFrame
 
@@ -352,99 +472,14 @@ def extract_loci_with_coords(
         raise ValueError("no loci survived extraction")
 
     onehot = OneHotEncoder().to_onehot(sequences)
-    keep = np.ones(len(onehot), dtype=bool)
+    keep = torch.ones(len(onehot), dtype=torch.bool)
     if drop_ambiguous:
-        keep = (onehot.sum(axis=1) == 1).all(axis=-1)
-
-    surviving = frame.loc[np.asarray(kept)[keep]].reset_index(drop=True)
-    surviving["source_row"] = np.asarray(kept)[keep]
+        keep = (onehot.sum(dim=1) == 1).all(dim=-1)
+    rows = np.asarray(kept)[keep.numpy()]
+    surviving = frame.loc[rows].reset_index(drop=True)
+    surviving["source_row"] = rows
     return Loci(
         onehot=onehot[keep],
-        signals=np.stack(signal_blocks)[keep] if signal_blocks else None,
+        signals=np.stack(signal_blocks)[keep.numpy()] if signal_blocks else None,
         coords=surviving,
     )
-
-
-def read_fasta(path: str | Path, length: int | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Read a FASTA as one-hot sequences and their record names.
-
-    A base outside the alphabet becomes an all-zero column, as everywhere else
-    here, rather than an error. A caller that cannot tolerate one, such as
-    design, asserts hard one-hot itself and says so in its own terms.
-
-    Parameters
-    ----------
-    path
-        FASTA to read.
-    length
-        Required record length, when the caller has one. Design templates must
-        carry the complete input window including the model's flanks, because
-        no padding is added: a padded flank is context the model would read as
-        real sequence.
-
-    Returns
-    -------
-    onehot : ndarray
-        ``(N, 4, length)`` one-hot ACGT.
-    names : ndarray
-        Record names, in file order.
-
-    Raises
-    ------
-    ValueError
-        If the file is empty, or a record is not `length` long.
-    """
-    with Fasta(str(path), as_raw=True, sequence_always_upper=True) as fasta:
-        names = list(fasta.keys())
-        sequences = [fasta[name][:] for name in names]
-
-    if not sequences:
-        raise ValueError(f"{path}: no records")
-    if length is not None:
-        wrong = [n for n, s in zip(names, sequences) if len(s) != length]
-        if wrong:
-            raise ValueError(
-                f"{path}: {len(wrong)} record(s) are not {length} bp, first {wrong[0]!r}"
-            )
-    return OneHotEncoder().to_onehot(sequences), np.asarray(names)
-
-
-def read_npz(path: str | Path) -> tuple[np.ndarray, dict[str, np.ndarray], list[str] | None]:
-    """Read prepared examples from an NPZ, for a model with no genome.
-
-    The sibling of :func:`read_fasta` and of
-    :func:`extract_loci_with_coords`: three input sources, three readers.
-
-    Parameters
-    ----------
-    path
-        NPZ holding ``onehot`` and ``ids``, optionally ``output_names``, plus
-        any example-indexed arrays to carry through, typically ``observed``.
-
-    Returns
-    -------
-    onehot : ndarray
-        ``(N, 4, length)`` one-hot ACGT.
-    arrays : dict of ndarray
-        Every other array in the file, all example-indexed, ``ids`` included.
-    outputs : list of str or None
-        The file's ``output_names``. Kept out of `arrays` because it indexes
-        outputs rather than examples, and everything in `arrays` must share the
-        example axis.
-
-    Raises
-    ------
-    ValueError
-        If ``onehot`` or ``ids`` is absent, or the encoding is not
-        ``(N, 4, length)``.
-    """
-    with np.load(path, allow_pickle=False) as handle:
-        arrays = dict(handle)
-
-    if "onehot" not in arrays or "ids" not in arrays:
-        raise ValueError(f"{path}: prepared examples need 'onehot' and 'ids' arrays")
-    onehot = arrays.pop("onehot")
-    if onehot.ndim != 3 or onehot.shape[1] != len(ALPHABET):
-        raise ValueError("prepared 'onehot' must be (examples, 4, length)")
-    names = arrays.pop("output_names", None)
-    return onehot, arrays, (None if names is None else [str(n) for n in names])

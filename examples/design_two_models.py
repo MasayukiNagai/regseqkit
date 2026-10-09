@@ -40,7 +40,7 @@ scorers = ScoreModule(wrapped_model, objective.scorers)
 # 4. Prepare template sequence(s) to apply edit
 onehot_encoder = OneHotEncoder()
 template_sequence = "ACGT" * 50  # Replace with your actual template sequence
-template_onehot = torch.from_numpy(onehot_encoder.to_onehot([template_sequence])).float()
+template_onehot = onehot_encoder.to_onehot([template_sequence]).float()
 
 # 5. Run design algorithm
 designed = greedy_substitution(
@@ -58,5 +58,5 @@ with torch.no_grad():
     print("Before [A, B]:", scorers(template_onehot.to(device)).cpu())
     print("After  [A, B]:", scorers(designed.to(device)).cpu())
 
-designed_sequence = onehot_encoder.from_onehot(designed[0].cpu().numpy())
+designed_sequence = onehot_encoder.from_onehot(designed[0])
 print("Designed sequence:", designed_sequence)

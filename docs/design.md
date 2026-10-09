@@ -70,7 +70,7 @@ An objective defines the goal for a score. It returns one loss per sequence, and
 ```python
 encoder = OneHotEncoder()
 template_sequence = "ACGT" * 50
-template = torch.from_numpy(encoder.to_onehot([template_sequence])).float()
+template = encoder.to_onehot([template_sequence]).float()
 ```
 
 The template is the DNA sequence from which the search starts. Replace this example with a sequence of the length required by your model. Encoding produces an array shaped `(1, 4, length)`; converting it to a float tensor prepares it for the model. Each position has one active channel corresponding to A, C, G, or T.
@@ -102,7 +102,7 @@ with torch.no_grad():
     before_loss = objective(before)
     after_loss = objective(after)
 
-designed_sequence = encoder.from_onehot(designed[0].numpy())
+designed_sequence = encoder.from_onehot(designed[0])
 
 print("Before score:", before)
 print("After score:", after)
