@@ -21,13 +21,12 @@ class BlockOptional(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockOptional())
 import torch
 import regseqkit.figures
-import regseqkit.greedy_analysis
 import regseqkit.motifs
 from regseqkit.design import Objective, greedy_substitution, ledidi_design
 from regseqkit.config import build_objectives, build_scorers
 from tangermeme.predict import predict
 from regseqkit.mutagenesis import single_site_saturation_mutagenesis
-from regseqkit.scoring import ScalarScorer, ScoreModule, identity_scorers
+from regseqkit.scoring import ScalarScorer, ScoreModule
 
 class Model(torch.nn.Module):
     def forward(self, X):
