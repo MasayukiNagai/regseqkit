@@ -6,7 +6,7 @@ from regseqkit.sequences import OneHotEncoder
 
 
 # 1. Define a model wrapper.
-class CountOutput(torch.nn.Module):
+class CountWrapper(torch.nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
@@ -20,7 +20,7 @@ class CountOutput(torch.nn.Module):
 
 device = "cpu"  # Or "cuda:0".
 model = None  # Replace with your model returning (profiles, counts).
-wrapped_model = CountOutput(model).to(device).float().eval()
+wrapped_model = CountWrapper(model).to(device).float().eval()
 
 # If the count output is log1p-transformed, convert it before scoring:
 # from regseqkit.wrappers import Log1pToCounts
