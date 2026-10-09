@@ -8,6 +8,8 @@ The workflow starts with a trained model and a template sequence to edit. The te
 - **Objectives** define the goals for those measurements, such as increasing activity or matching a target value.
 - **Search algorithms** determine how candidate edits are proposed and explored. Approaches include greedy substitution, gradient-based optimization, and genetic algorithms.
 
+![Design workflow: template to model, scorers, objective, and search algorithm, with candidates fed back to the model](design_workflow.svg)
+
 Example scripts are provided in `examples/design_*`: [design_single_model.py](../examples/design_single_model.py), [design_two_models.py](../examples/design_two_models.py), and [design_cherimoya.py](../examples/design_cherimoya.py).
 
 The following code blocks form one workflow. They assume you already have a loaded model called `trained_model`. This example selects a single scalar output from a model returning `(profiles, counts)`, as in [design_single_model.py](../examples/design_single_model.py).
