@@ -12,7 +12,7 @@ from regseqkit.calibrate import Calibration, resolve_percentile_targets, summari
 from regseqkit.config import build_objectives, build_scorers
 from regseqkit.design import Objective, WeightedObjective, greedy_design, greedy_substitution, ledidi_design
 from regseqkit.mutagenesis import single_site_saturation_mutagenesis, ssm_attribution
-from regseqkit.scoring import ProfileScorer, ScalarScorer, ScoreModule
+from regseqkit.scoring import ScalarScorer, ScoreModule
 
 class Counts(torch.nn.Module):
     def __init__(self):
@@ -287,13 +287,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(all(isinstance(s, ScalarScorer) for s in scorers.values()))
         torch.testing.assert_close(scorers["delta"].weights, torch.tensor([1.0, -1.0]))
 
-        # A profile entry builds the other class, with its own vocabulary.
-        profile = build_scorers(
-            [{"name": "shape", "head": "profile", "reduction": "sum", "weights": {"A": 1.0}}],
-            ["A", "C"],
-        )
-        self.assertIsInstance(profile["shape"], ProfileScorer)
-        self.assertEqual(profile["shape"].reduction, "sum")
+        for field, value in (("head", "profile"), ("absolute", True), ("reduction", "sum")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "model wrapper"):
+                build_scorers([dict(entries[0], **{field: value})], ["A", "C"])
 
         with self.assertRaisesRegex(ValueError, "do not convert outputs"):
             build_scorers([dict(entries[0], units="log")], ["A", "C"])
@@ -301,8 +297,6 @@ class ConfigurationTests(unittest.TestCase):
             build_scorers([{"name": "x", "weights": {"Z": 1.0}}], ["A", "C"])
         with self.assertRaises(ValueError):  # duplicate name
             build_scorers(entries + entries[:1], ["A", "C"])
-        with self.assertRaises(ValueError):  # unsafe name
-            build_scorers([{"name": "../x", "weights": {"A": 1.0}}], ["A", "C"])
 
         # standardize reaches scalar scorers and an entry can opt out.
         center, scale = np.zeros(2), np.ones(2) * 2

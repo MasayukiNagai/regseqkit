@@ -4,7 +4,7 @@ import unittest
 import torch
 
 from regseqkit.design import Objective, WeightedObjective
-from regseqkit.scoring import ScalarScorer, ProfileScorer, ScoreModule
+from regseqkit.scoring import ScalarScorer, ScoreModule
 from regseqkit.wrappers import Log1pToCounts, log1p_to_counts
 
 class ScoringTests(unittest.TestCase):
@@ -52,44 +52,11 @@ class ScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # one per output, not one per anything
             ScalarScorer(weights, standardize=(torch.zeros(3), torch.ones(3)))
 
-    def test_profile_contrast_scorer(self):
-        """Per-position difference, then |.| and a reduction, not a total."""
-
-        class Profiles(torch.nn.Module):
-            def __init__(self, y):
-                super().__init__()
-                self.y = y
-
-            def forward(self, X):
-                return self.y
-
-        y = torch.tensor([[[3.0, 1.0], [1.0, 3.0]]])  # equal totals, different shapes
-        self.assertEqual(float(y[0, 0].sum() - y[0, 1].sum()), 0.0)
-        weights = torch.tensor([1.0, -1.0])
-        for reduction, expected in {"mean": 2.0, "max": 2.0, "sum": 4.0}.items():
-            scorer = ProfileScorer(weights, reduction=reduction)
-            self.assertAlmostEqual(float(scorer(y)[0]), expected, places=6)
-        signed = ProfileScorer(weights, absolute=False, reduction="sum")
-        self.assertAlmostEqual(float(signed(y)[0]), 0.0, places=6)
-        stack = ScoreModule(Profiles(y), [ProfileScorer(weights)])
-        self.assertEqual(tuple(stack(torch.zeros(1, 4, 8)).shape), (1, 1))
-        with self.assertRaises(ValueError):
-            ProfileScorer(weights, reduction="median")
-        with self.assertRaises(ValueError):
-            ProfileScorer(torch.tensor([1.0, -1.0, 1.0]))(y)
-        with self.assertRaisesRegex(ValueError, "profiles"):
-            ScoreModule(torch.nn.Identity(), [ScalarScorer([1.0, 0.0]), ProfileScorer(weights)])(
-                torch.zeros(1, 2)
-            )
-
     def test_scorers_validate_shapes(self):
         scalar = ScalarScorer([1., -1.])
-        profile = ProfileScorer([1., -1.])
         for values in (torch.ones(3, 2, 4), torch.ones(3, 1), torch.ones(2)):
             with self.subTest(shape=values.shape), self.assertRaisesRegex(ValueError, "scalar predictions"):
                 scalar(values)
-        with self.assertRaisesRegex(ValueError, "profiles"):
-            profile(torch.ones(3, 2))
 
     def test_stack_evaluates_the_shared_model_once(self):
         class Model(torch.nn.Module):

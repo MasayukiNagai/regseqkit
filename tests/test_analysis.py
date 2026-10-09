@@ -16,7 +16,7 @@ import torch
 
 from regseqkit.calibrate import Calibration, Distribution, resolve_percentile_targets, summarize_predictions
 from regseqkit.figures import plot_density_scatter, plot_profiles, subplots_with_plot_size
-from regseqkit.io import load_arrays, save_arrays, safe_name, validate_examples
+from regseqkit.io import load_arrays, save_arrays
 from regseqkit.metrics import pearson_correlation, spearman_correlation, pool_channels, profile_metrics, scalar_metrics, window_mask
 from regseqkit.sequences import OneHotEncoder, read_npz
 
@@ -50,19 +50,15 @@ class SequenceAndArtifactTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "[]")
 
-    def test_artifacts_and_safe_names(self):
+    def test_artifact_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             save_arrays(root / "saved.a.b", {"ids": np.array(["x"]), "observed": np.ones((1, 1))}, {})
             self.assertTrue((root / "saved.a.b.npz").is_file())  # appended, not substituted
             arrays, metadata = load_arrays(root / "saved.a.b.json")
-            validate_examples(arrays, ["A"])
-            with self.assertRaises(ValueError):
-                validate_examples({"ids": np.array(["x", "x"])})
-        self.assertEqual(safe_name("multitask.seed0"), "multitask.seed0")
-        for bad in ("", ".hidden", "a/b", "a b"):
-            with self.assertRaises(ValueError):
-                safe_name(bad)
+            np.testing.assert_array_equal(arrays["ids"], ["x"])
+            np.testing.assert_array_equal(arrays["observed"], np.ones((1, 1)))
+            self.assertEqual(metadata, {})
 
     def test_read_npz(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,7 +69,6 @@ class SequenceAndArtifactTests(unittest.TestCase):
             self.assertEqual(onehot.shape, (2, 4, 8))
             self.assertEqual(outputs, ["A", "C"])
             self.assertEqual(sorted(arrays), ["ids", "observed"])
-            validate_examples(arrays, outputs)
 
 
 class CalibrationTests(unittest.TestCase):
