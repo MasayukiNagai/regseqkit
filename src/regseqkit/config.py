@@ -21,7 +21,7 @@ _HEADS = ("scalar", "profile")
 
 def build_scorers(
     entries: Sequence[Mapping[str, Any]],
-    outputs: Sequence[str],
+    output_names: Sequence[str],
     *,
     standardize: tuple[Any, Any] | None = None,
 ) -> dict[str, Scorer]:
@@ -34,7 +34,7 @@ def build_scorers(
         an output name to its weight; unlisted outputs weigh zero.
         A head value of "profile" builds a ProfileScorer and may carry
         absolute and reduction settings.
-    outputs : Sequence[str]
+    output_names : Sequence[str]
         Model output names, giving the weight vector's order.
     standardize : tuple or None, default None
         Optional (center, scale) per model output, applied to every scalar
@@ -51,7 +51,7 @@ def build_scorers(
         If a name is missing, unsafe or repeated, the weights name an unknown
         output, or a field is invalid for the chosen head.
     """
-    index = {name: position for position, name in enumerate(outputs)}
+    index = {name: position for position, name in enumerate(output_names)}
     built: dict[str, Scorer] = {}
     seen: set[str] = set()
 
@@ -69,8 +69,8 @@ def build_scorers(
         weights = entry.get("weights") or {}
         unknown = [key for key in weights if key not in index]
         if unknown:
-            raise ValueError(f"{name}: unknown output(s) {unknown}; have {list(outputs)}")
-        vector = torch.zeros(len(outputs), dtype=torch.float32)
+            raise ValueError(f"{name}: unknown output(s) {unknown}; have {list(output_names)}")
+        vector = torch.zeros(len(output_names), dtype=torch.float32)
         for key, value in weights.items():
             vector[index[key]] = float(value)
 
@@ -78,12 +78,14 @@ def build_scorers(
         if head not in _HEADS:
             raise ValueError(f"{name}: head must be one of {_HEADS}, got {head!r}")
         if head == "profile":
+            # ProfileScorer combines channels, then reduces over positions.
             built[name] = ProfileScorer(
                 vector,
                 absolute=bool(entry.get("absolute", True)),
                 reduction=str(entry.get("reduction", "mean")),
             )
         else:
+            # ScalarScorer computes a weighted sum of scalar predictions.
             wanted = entry.get("standardize", True)
             built[name] = ScalarScorer(
                 vector,
@@ -133,6 +135,7 @@ def build_objectives(
             if any(key in entry for key in ("scorer", "mode", "target")):
                 raise ValueError("a weighted objective cannot also define scorer, mode or target")
             sub_objectives = entry["objectives"]
+            # WeightedObjective combines the losses of its child objectives.
             return WeightedObjective(
                 objectives=tuple(build(sub_objective) for sub_objective in sub_objectives),
                 weights=tuple(
@@ -151,6 +154,7 @@ def build_objectives(
             if template_scores is None or wanted not in template_scores:
                 raise ValueError(f"missing template score for {wanted!r}")
             target = template_scores[wanted]
+        # Objective applies one optimization goal to a single scorer.
         return Objective(
             scorer=scorers[wanted],
             mode=str(entry.get("mode", "")),

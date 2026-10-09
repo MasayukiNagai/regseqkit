@@ -204,26 +204,3 @@ class ScoreModule(torch.nn.Module):
         """Return ``(N, len(scorers))`` in scorer order."""
         outputs = self.model(X)
         return torch.stack([scorer(outputs) for scorer in self.scorers], dim=1)
-
-
-def identity_scorers(outputs: Sequence[str]) -> dict[str, ScalarScorer]:
-    """One scorer per model output, each selecting only itself.
-
-    The default when a project configures no scorers.
-
-    Parameters
-    ----------
-    outputs : Sequence[str]
-        Model output names.
-
-    Returns
-    -------
-    scorers : dict[str, ScalarScorer]
-        Output names mapped to their selecting scorers.
-    """
-    eye = torch.eye(len(outputs))
-    return {
-        name: ScalarScorer(eye[position])
-        for position, name in enumerate(outputs)
-    }
-
