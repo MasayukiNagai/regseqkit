@@ -11,20 +11,16 @@ from typing import Any
 import torch
 
 from .design.objectives import Objective, ObjectiveProtocol, WeightedObjective
-from .io import safe_name
-from .scoring import ProfileScorer, ScalarScorer, Scorer
+from .scoring import ScalarScorer, Scorer
 
 __all__ = ["build_scorers", "build_objectives"]
-
-_HEADS = ("scalar", "profile")
-
 
 def build_scorers(
     entries: Sequence[Mapping[str, Any]],
     output_names: Sequence[str],
     *,
     standardize: tuple[Any, Any] | None = None,
-) -> dict[str, Scorer]:
+) -> dict[str, ScalarScorer]:
     """Build scorers from mapping entries.
 
     Parameters
@@ -32,8 +28,7 @@ def build_scorers(
     entries : Sequence[Mapping]
         One mapping per scorer, with name and weights. Weights map
         an output name to its weight; unlisted outputs weigh zero.
-        A head value of "profile" builds a ProfileScorer and may carry
-        absolute and reduction settings.
+        Model wrappers prepare scalar features before scoring.
     output_names : Sequence[str]
         Model output names, giving the weight vector's order.
     standardize : tuple or None, default None
@@ -42,26 +37,32 @@ def build_scorers(
 
     Returns
     -------
-    scorers : dict[str, Scorer]
+    scorers : dict[str, ScalarScorer]
         Scorer identifiers mapped to numerical scorers, in entry order.
 
     Raises
     ------
     ValueError
-        If a name is missing, unsafe or repeated, the weights name an unknown
-        output, or a field is invalid for the chosen head.
+        If a name is repeated, the weights name an unknown
+        output, or an entry requests output conversion or profile reduction.
+    KeyError
+        If an entry has no name.
     """
     index = {name: position for position, name in enumerate(output_names)}
-    built: dict[str, Scorer] = {}
+    built: dict[str, ScalarScorer] = {}
     seen: set[str] = set()
 
-    for position, entry in enumerate(entries):
+    for entry in entries:
         if "units" in entry or "transform" in entry:
             raise ValueError(
-                "scorers do not convert outputs; choose model_output.space in the "
-                "configuration or wrap the model before scoring"
+                "scorers do not convert outputs; wrap the model before scoring"
             )
-        name = safe_name(str(entry.get("name", "")), f"scorer {position}'s name")
+        if any(key in entry for key in ("head", "absolute", "reduction")):
+            raise ValueError(
+                "scorers require prepared scalar outputs; select heads and reduce "
+                "profiles in a model wrapper"
+            )
+        name = str(entry["name"])
         if name in seen:
             raise ValueError(f"duplicate scorer name {name!r}")
         seen.add(name)
@@ -74,23 +75,11 @@ def build_scorers(
         for key, value in weights.items():
             vector[index[key]] = float(value)
 
-        head = str(entry.get("head", "scalar"))
-        if head not in _HEADS:
-            raise ValueError(f"{name}: head must be one of {_HEADS}, got {head!r}")
-        if head == "profile":
-            # ProfileScorer combines channels, then reduces over positions.
-            built[name] = ProfileScorer(
-                vector,
-                absolute=bool(entry.get("absolute", True)),
-                reduction=str(entry.get("reduction", "mean")),
-            )
-        else:
-            # ScalarScorer computes a weighted sum of scalar predictions.
-            wanted = entry.get("standardize", True)
-            built[name] = ScalarScorer(
-                vector,
-                standardize=standardize if (standardize and wanted) else None,
-            )
+        wanted = entry.get("standardize", True)
+        built[name] = ScalarScorer(
+            vector,
+            standardize=standardize if (standardize and wanted) else None,
+        )
     return built
 
 
@@ -123,9 +112,9 @@ def build_objectives(
     Raises
     ------
     ValueError
-        If a name is missing, unsafe or repeated, or an objective is invalid.
+        If a name is repeated or an objective is invalid.
     KeyError
-        If an objective names a scorer that does not exist.
+        If an entry has no name or an objective names a scorer that does not exist.
     """
 
     def build(entry: Mapping[str, Any]) -> ObjectiveProtocol:
@@ -163,8 +152,8 @@ def build_objectives(
 
     built: dict[str, ObjectiveProtocol] = {}
 
-    for position, entry in enumerate(entries):
-        name = safe_name(str(entry.get("name", "")), f"objective {position}'s name")
+    for entry in entries:
+        name = str(entry["name"])
         if name in built:
             raise ValueError(f"duplicate objective name {name!r}")
 

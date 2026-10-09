@@ -5,11 +5,8 @@ replicates, difference conditions, weight a contrast, or apply other
 aggregations. An Objective converts scores into losses for maximizing,
 minimizing, or matching a target.
 
-One class per model head, because the heads answer different questions.
-:class:`ScalarScorer` reads the scalar head, which already emits one number per
-output, so it never touches the profile. :class:`ProfileScorer` reads the
-profile head, where there is a position axis and therefore something to
-collapse. ``reduction`` belongs to the second and nowhere else.
+Model wrappers prepare scalar features shaped (N, outputs). Scorers combine
+these features without selecting model heads or reducing profile positions.
 
 A scorer reads *outputs*, not sequences, which is what lets several of them
 share one model forward. :class:`ScoreModule` is that sharing. It serves
@@ -111,64 +108,6 @@ class ScalarScorer(Scorer):
             values = (values - center.to(values)) / scale.to(values)
         return values @ self.weights.to(device=values.device, dtype=values.dtype)
 
-
-@dataclass(frozen=True)
-class ProfileScorer(Scorer):
-    """A weighted combination of profile channels, reduced over positions.
-
-    Where :class:`ScalarScorer` combines already-pooled totals, this combines
-    the profile head *per position* and only then collapses, so a difference
-    that cancels out in the totals can still be measured where it happens. This
-    is about *where* signal sits, not how much of it there is.
-
-    Parameters
-    ----------
-    weights
-        One weight per profile channel, in channel order.
-    absolute
-        Take ``|.|`` of the per-position combination before reducing, so a gain
-        at one position and a loss at another add rather than cancel.
-    reduction
-        How to collapse positions: ``"mean"``, ``"max"`` or ``"sum"``.
-    """
-
-    REDUCTIONS = ("mean", "max", "sum")
-
-    weights: torch.Tensor
-    absolute: bool = True
-    reduction: str = "mean"
-
-    def __post_init__(self) -> None:
-        if self.reduction not in self.REDUCTIONS:
-            raise ValueError(f"reduction must be one of {self.REDUCTIONS}")
-        object.__setattr__(self, "weights", _validate_weights(self.weights))
-
-    def __call__(self, outputs: torch.Tensor) -> torch.Tensor:
-        """Combine profile channels and reduce over positions.
-
-        Parameters
-        ----------
-        outputs : torch.Tensor, shape (N, channels, positions)
-            Prepared profile predictions in channel order.
-
-        Returns
-        -------
-        scores : torch.Tensor, shape (N,)
-            One reduced score per example.
-        """
-        if outputs.ndim != 3 or outputs.shape[1] != self.weights.numel():
-            raise ValueError(
-                f"expected (N, {self.weights.numel()}, positions) profiles"
-            )
-        weights = self.weights.to(device=outputs.device, dtype=outputs.dtype)
-        per_position = torch.einsum("ncl,c->nl", outputs, weights)
-        if self.absolute:
-            per_position = per_position.abs()
-        if self.reduction == "mean":
-            return per_position.mean(-1)
-        if self.reduction == "sum":
-            return per_position.sum(-1)
-        return per_position.max(-1).values
 
 
 class ScoreModule(torch.nn.Module):

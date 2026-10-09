@@ -12,7 +12,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..io import safe_name
 
 
 def build_jobs(
@@ -103,7 +102,7 @@ def build_jobs(
         for seed in seeds:
             for group in groups:
                 label = group[0]["track"] if arm == "single-task" else name
-                job_name = safe_name(f"{label}.seed{seed}", "job name")
+                job_name = f"{label}.seed{seed}"
                 specs.append(
                     dict(
                         name=job_name,
