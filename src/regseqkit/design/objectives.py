@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 import torch
@@ -95,7 +95,7 @@ class Objective:
             return -values
         if self.mode == "minimize":
             return values
-        return (values - self.target) ** 2
+        return (values - cast(float, self.target)) ** 2
 
     def __str__(self) -> str:
         target = "" if self.target is None else f", target={self.target:g}"
@@ -179,15 +179,17 @@ class WeightedObjective:
         if scores.ndim != 2 or scores.shape[1] != len(self.scorers):
             raise ValueError(f"expected (N, {len(self.scorers)}) scores, got {tuple(scores.shape)}")
         total = scores.new_zeros(len(scores))
+        weights = cast(tuple[float, ...], self.weights)
         for sub_objective, weight, indices in zip(
-            self.objectives, self.weights, self._scorer_indices
+            self.objectives, weights, self._scorer_indices
         ):
             if weight:
                 total = total + weight * sub_objective(scores[:, list(indices)])
         return total
 
     def __str__(self) -> str:
+        weights = cast(tuple[float, ...], self.weights)
         return " + ".join(
             str(objective) if weight == 1.0 else f"({objective})*{weight:g}"
-            for objective, weight in zip(self.objectives, self.weights)
+            for objective, weight in zip(self.objectives, weights)
         )

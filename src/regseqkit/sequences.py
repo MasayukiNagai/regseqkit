@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast, overload
 
 import numpy as np
 import pandas as pd
@@ -131,6 +131,20 @@ class OneHotEncoder:
         return decoded[0] if single else decoded
 
 
+@overload
+def reverse_complement(
+    seq: str,
+    complement_map: Mapping[str, str] | None = None,
+) -> str: ...
+
+
+@overload
+def reverse_complement(
+    seq: torch.Tensor,
+    complement_map: Mapping[str, str] | None = None,
+) -> torch.Tensor: ...
+
+
 def reverse_complement(
     seq: str | torch.Tensor,
     complement_map: Mapping[str, str] | None = None,
@@ -206,7 +220,8 @@ def read_fasta(path: str | Path, length: int | None = None) -> tuple[torch.Tenso
     """
     with Fasta(str(path), as_raw=True, sequence_always_upper=True) as fasta:
         names = list(fasta.keys())
-        sequences = [fasta[name][:] for name in names]
+        # as_raw=True returns strings for record slices.
+        sequences = [cast(str, fasta[name][:]) for name in names]
 
     if not sequences:
         raise ValueError(f"{path}: no records")
@@ -421,7 +436,7 @@ def extract_loci_with_coords(
         lengths = _chrom_lengths(fasta_handle)
         zones = _exclusion_zones(lengths, exclusion_lists)
 
-        rows = frame.itertuples(index=True)
+        rows = frame.loc[:, BED_COLUMNS].itertuples(index=False, name=None)
         if verbose:
             rows = tqdm(rows, total=len(frame), desc="extracting loci")
 
@@ -429,9 +444,9 @@ def extract_loci_with_coords(
         signal_blocks: list[np.ndarray] = []
         kept: list[int] = []
 
-        for row in rows:
-            chrom = str(row.chrom)
-            mid = int(row.start) + (int(row.end) - int(row.start)) // 2
+        for source_row, (chrom, locus_start, locus_end) in enumerate(rows):
+            chrom = str(chrom)
+            mid = int(locus_start) + (int(locus_end) - int(locus_start)) // 2
 
             length = lengths.get(chrom)
             if length is None or mid - bound < 0 or mid + bound > length:
@@ -459,7 +474,7 @@ def extract_loci_with_coords(
 
             start, end = mid - in_half, mid + in_half + in_window % 2
             sequences.append(str(fasta_handle[chrom][start:end]))
-            kept.append(row.Index)
+            kept.append(source_row)
 
             if limit is not None and len(sequences) == limit:
                 break
