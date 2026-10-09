@@ -24,7 +24,7 @@ import regseqkit.figures
 import regseqkit.motifs
 from regseqkit.design import Objective, greedy_substitution, ledidi_design
 from regseqkit.config import build_objectives, build_scorers
-from tangermeme.predict import predict
+from regseqkit.inference import predict
 from regseqkit.mutagenesis import single_site_saturation_mutagenesis
 from regseqkit.scoring import ScalarScorer, ScoreModule
 
@@ -48,7 +48,7 @@ except RuntimeError as exc:
 else:
     raise AssertionError("missing Ledidi was not reported")
 try:
-    import regseqkit.cherimoya
+    import regseqkit.cherimoya.inference
 except ImportError as exc:
     assert "regseqkit[cherimoya]" in str(exc)
 else:

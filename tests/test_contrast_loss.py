@@ -13,7 +13,7 @@ except ModuleNotFoundError as exc:
 
 from regseqkit.cherimoya.contrast_loss import install, read_block, with_contrast
 
-PAIRS = [(1, 0), (2, 0), (3, 0)]  # three ultrasound tracks against one control
+PAIRS = [(1, 0), (2, 0), (3, 0)]
 
 
 def batch(n=16, tracks=4, length=50, seed=0):
@@ -56,7 +56,21 @@ class WithContrast(unittest.TestCase):
         self.assertTrue(torch.isfinite(logcounts.grad).all())
         self.assertGreater(logcounts.grad.abs().sum().item(), 0)
 
-    def test_rejects_grouped_count_heads(self):
+    def test_grouped_contrast_sums_channels_before_log1p(self):
+        y, logits, logcounts = batch()
+        logcounts = logcounts[:, :2].requires_grad_()
+        _, native = _mixture_loss(y, logits, logcounts, signal_groups=[2, 2])
+        _, augmented = with_contrast([(1, 0)], 2.0)(
+            y, logits, logcounts, signal_groups=[2, 2]
+        )
+        totals = torch.stack([y[:, :2].sum((1, 2)), y[:, 2:].sum((1, 2))], dim=1)
+        residual = totals.log1p() - logcounts
+        expected = (residual[:, 1] - residual[:, 0]).square().mean()
+        torch.testing.assert_close(augmented - native, expected.expand(2))
+        augmented.sum().backward()
+        self.assertTrue(torch.isfinite(logcounts.grad).all())
+
+    def test_rejects_indices_outside_grouped_count_heads(self):
         y, logits, logcounts = batch()
         with self.assertRaises(ValueError):
             with_contrast(PAIRS, 1.0)(y, logits, logcounts[:, :2], signal_groups=[2, 2])
@@ -75,12 +89,12 @@ class Install(unittest.TestCase):
 
 class ReadBlock(unittest.TestCase):
     FIT = {
-        "signals": ["/x/CONTROL.second.bw", "/x/US108.second.bw", "/x/US129.second.bw"],
+        "signals": [["/x/plus.bw", "/x/minus.bw"], "/x/a.bw", "/x/b.bw"],
         "contrast": {
             "weight": 10,
             "pairs": [
-                {"us": "US108.second", "control": "CONTROL.second", "indices": [1, 0]},
-                {"us": "US129.second", "control": "CONTROL.second", "indices": [2, 0]},
+                [1, 0],
+                [2, 0],
             ],
         },
     }
@@ -90,10 +104,14 @@ class ReadBlock(unittest.TestCase):
         self.assertEqual(pairs, [(1, 0), (2, 0)])
         self.assertEqual(weight, 10.0)
 
-    def test_rejects_names_that_disagree_with_signals(self):
-        fit = {**self.FIT, "signals": list(reversed(self.FIT["signals"]))}
+    def test_rejects_indices_outside_count_outputs(self):
+        fit = {**self.FIT, "contrast": {"weight": 1, "pairs": [[3, 0]]}}
         with self.assertRaises(ValueError):
             read_block(fit)
+
+    def test_reads_legacy_index_dictionaries(self):
+        fit = {**self.FIT, "contrast": {"weight": 1, "pairs": [{"indices": [1, 0]}]}}
+        self.assertEqual(read_block(fit), ([(1, 0)], 1.0))
 
 
 if __name__ == "__main__":

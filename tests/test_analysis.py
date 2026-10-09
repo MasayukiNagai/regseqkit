@@ -18,7 +18,7 @@ from regseqkit.calibrate import Calibration, Distribution, resolve_percentile_ta
 from regseqkit.figures import plot_density_scatter, plot_profiles, subplots_with_plot_size
 from regseqkit.io import load_arrays, save_arrays
 from regseqkit.metrics import pearson_correlation, spearman_correlation, pool_channels, profile_metrics, scalar_metrics, window_mask
-from regseqkit.sequences import OneHotEncoder, read_npz
+from regseqkit.sequences import OneHotEncoder, extract_loci_with_coords, read_fasta, read_npz, reverse_complement
 
 class SequenceAndArtifactTests(unittest.TestCase):
     def setUp(self):
@@ -26,21 +26,103 @@ class SequenceAndArtifactTests(unittest.TestCase):
         self.addCleanup(torch.set_num_threads, previous)
         torch.set_num_threads(1)
 
+    def test_reverse_complement_strings_and_custom_mapping(self):
+        self.assertEqual(reverse_complement("AACGN"), "NCGTT")
+        self.assertEqual(reverse_complement(""), "")
+        rna = {"A": "U", "U": "A", "C": "G", "G": "C"}
+        self.assertEqual(reverse_complement("AACGU", complement_map=rna), "ACGUU")
+
+    def test_reverse_complement_batched_tensors_in_custom_channel_order(self):
+        encoder = OneHotEncoder(alphabet="ATCG")
+        mapping = {"A": "T", "T": "A", "C": "G", "G": "C"}
+        original = encoder.to_onehot(["AACGN", "TTCAN"])
+        expected = encoder.to_onehot(["NCGTT", "NTGAA"])
+        complemented = reverse_complement(original, complement_map=mapping)
+        torch.testing.assert_close(complemented, expected)
+        self.assertEqual(complemented.dtype, original.dtype)
+        self.assertEqual(complemented.device, original.device)
+        torch.testing.assert_close(reverse_complement(original[0], mapping), expected[0])
+        torch.testing.assert_close(reverse_complement(complemented, mapping), original)
+        torch.testing.assert_close(
+            reverse_complement(original.unsqueeze(0), mapping), expected.unsqueeze(0)
+        )
+        self.assertEqual(encoder.from_onehot(original), ["AACGN", "TTCAN"])
+
+    def test_reverse_complement_preserves_tensor_gradients(self):
+        values = torch.rand(2, 4, 7, requires_grad=True)
+        reverse_complement(values)[:, 0, 0].sum().backward()
+        expected = torch.zeros_like(values)
+        expected[:, 3, -1] = 1
+        torch.testing.assert_close(values.grad, expected)
+
+    def test_reverse_complement_rejects_mismatched_channels(self):
+        with self.assertRaisesRegex(ValueError, "channel count"):
+            reverse_complement(torch.zeros(2, 3, 5))
+
     def test_onehot_encoder_round_trip_and_unknowns(self):
         encoder = OneHotEncoder()
         onehot = encoder.to_onehot(["ACGT", "AANT"])
         self.assertEqual(onehot.shape, (2, 4, 4))
-        self.assertEqual(onehot.dtype, np.int8)
+        self.assertEqual(onehot.dtype, torch.int8)
         # A base outside the alphabet is an all-zero column, not an error.
         self.assertEqual(int(onehot[1, :, 2].sum()), 0)
         self.assertEqual(encoder.from_onehot(onehot), ["ACGT", "AANT"])
         single = encoder.to_onehot("ACGT")
         self.assertEqual(single.shape, (4, 4))
-        self.assertTrue(np.array_equal(single, np.eye(4, dtype=np.int8)))
+        torch.testing.assert_close(single, torch.eye(4, dtype=torch.int8))
+
+    def test_tensor_encoder_respects_explicit_layout_and_dtype(self):
+        for axis in (1, -1, 2):
+            encoder = OneHotEncoder(alphabet="ATCG", channel_axis=axis, dtype=torch.float32)
+            encoded = encoder.to_onehot(["AGTT", "NCAT"])
+            self.assertEqual(encoded.dtype, torch.float32)
+            self.assertEqual(encoded.device.type, "cpu")
+            self.assertEqual(encoder.from_onehot(encoded.requires_grad_()), ["AGTT", "NCAT"])
+            self.assertEqual(encoder.from_onehot(encoded[0]), "AGTT")
+            self.assertIsNone(encoded.grad)
+            one_a = encoder.to_onehot("A")
+            expected = torch.tensor([[1., 0., 0., 0.]])
+            torch.testing.assert_close(one_a, expected.T if axis == 1 else expected)
+
+    def test_tensor_encoder_handles_padding_and_empty_sequences(self):
+        encoder = OneHotEncoder(dtype=torch.bool)
+        encoded = encoder.to_onehot(["ac", "N"])
+        self.assertEqual(encoded.dtype, torch.bool)
+        self.assertEqual(encoder.from_onehot(encoded), ["AC", "NN"])
+        self.assertEqual(encoder.from_onehot(encoder.to_onehot("")), "")
+        self.assertEqual(encoder.from_onehot(encoder.to_onehot(["", ""])), ["", ""])
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_tensor_encoder_decodes_on_cuda(self):
+        encoder = OneHotEncoder()
+        self.assertEqual(encoder.from_onehot(encoder.to_onehot(["AGTT", "NCAT"]).cuda()),
+                         ["AGTT", "NCAT"])
+
+    def test_sequence_readers_return_tensors_and_keep_coordinate_alignment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fasta = root / "genome.fa"
+            fasta.write_text(">chr1\nAAAAANNNNCCCCCGGGGGTTTTT\n")
+            bed = root / "loci.bed"
+            bed.write_text("chr1\t1\t5\nchr1\t5\t9\nchr1\t10\t14\n")
+            extracted = extract_loci_with_coords(
+                bed, fasta, in_window=4, out_window=4, drop_ambiguous=True,
+            )
+            self.assertIsInstance(extracted.onehot, torch.Tensor)
+            self.assertEqual(extracted.onehot.dtype, torch.int8)
+            self.assertEqual(OneHotEncoder().from_onehot(extracted.onehot), ["AAAA", "CCCC"])
+            self.assertEqual(extracted.coords.source_row.tolist(), [0, 2])
+            self.assertIsNone(extracted.signals)
+            templates = root / "templates.fa"
+            templates.write_text(">a\nAGTT\n>b\nNCAT\n")
+            encoded, names = read_fasta(templates, length=4)
+            self.assertIsInstance(encoded, torch.Tensor)
+            self.assertEqual(OneHotEncoder().from_onehot(encoded), ["AGTT", "NCAT"])
+            np.testing.assert_array_equal(names, ["a", "b"])
 
     def test_light_modules_import_without_torch(self):
         code = (
-            "import sys, regseqkit.io, regseqkit.metrics, regseqkit.sequences; "
+            "import sys, regseqkit.io, regseqkit.metrics; "
             "heavy = [m for m in ('torch', 'tangermeme', 'cherimoya') if m in sys.modules]; "
             "print(heavy)"
         )
@@ -66,7 +148,10 @@ class SequenceAndArtifactTests(unittest.TestCase):
             np.savez(path, onehot=np.zeros((2, 4, 8), np.int8), ids=np.array(["a", "b"]),
                      output_names=np.array(["A", "C"]), observed=np.zeros((2, 2)))
             onehot, arrays, outputs = read_npz(path)
+            self.assertIsInstance(onehot, torch.Tensor)
+            self.assertEqual(onehot.dtype, torch.int8)
             self.assertEqual(onehot.shape, (2, 4, 8))
+            self.assertTrue(all(isinstance(array, np.ndarray) for array in arrays.values()))
             self.assertEqual(outputs, ["A", "C"])
             self.assertEqual(sorted(arrays), ["ids", "observed"])
 
@@ -254,9 +339,10 @@ class CherimoyaAdapterTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("cherimoya"), "requires regseqkit[cherimoya]")
     def test_cherimoya_checkpoint_groups_rc_and_gradients(self):
         from cherimoya import Cherimoya
-        from cherimoya.wrappers import ExpectedCountsWrapper
+        from cherimoya.wrappers import ControlWrapper, ExpectedCountsWrapper, LogCountWrapper
 
-        from regseqkit.cherimoya import load_checkpoint, output_module, predict_outputs
+        from regseqkit.inference import compute_signal
+        from regseqkit.cherimoya.inference import load_checkpoint, predict_cherimoya
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -273,7 +359,7 @@ class CherimoyaAdapterTests(unittest.TestCase):
             self.assertEqual(information["groups"], (2, 1))
             rng = torch.Generator().manual_seed(3)
             X = torch.nn.functional.one_hot(torch.randint(4, (3, 32), generator=rng), 4).permute(0, 2, 1).float()
-            scalars, profiles = predict_outputs(loaded, X, batch_size=2, rc_average=True)
+            scalars, profiles = predict_cherimoya(loaded, X, batch_size=2, rc_average=True)
             with torch.no_grad():
                 logits, counts = model(X)
                 reverse, reverse_counts = model(X.flip((-2, -1)))
@@ -283,10 +369,11 @@ class CherimoyaAdapterTests(unittest.TestCase):
                 expected_pair *= scalars[:, 0].expm1().clamp(min=0)[:, None, None]
                 torch.testing.assert_close(profiles[:, :2], expected_pair)
                 torch.testing.assert_close(
-                    output_module(loaded, "profile")(X), ExpectedCountsWrapper(model)(X).clamp(min=0)
+                    compute_signal(*loaded(X), loaded.signal_groups),
+                    ExpectedCountsWrapper(model)(X).clamp(min=0)
                 )
             X.requires_grad_()
-            output_module(loaded)(X).sum().backward()
+            LogCountWrapper(ControlWrapper(loaded))(X).sum().backward()
             self.assertTrue(torch.isfinite(X.grad).all())
 
 

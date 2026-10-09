@@ -9,6 +9,34 @@ import unittest
 
 @unittest.skipUnless(importlib.util.find_spec("cherimoya"), "requires regseqkit[cherimoya]")
 class TrainingJobTests(unittest.TestCase):
+    def test_grouped_jobs_roundtrip_and_preserve_output_metadata(self):
+        from regseqkit.cherimoya.training import build_jobs
+        from regseqkit.cherimoya.jobs import load_job, project_blocks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = build_jobs(
+                root, fasta="/g.fa", loci="/p.bed",
+                tracks=[{"track": "pair", "signal": ["/plus.bw", "/minus.bw"], "tag": "x"},
+                        {"track": "atac", "signal": "/atac.bw"}],
+                splits={"train": ["chr1"], "valid": ["chr2"], "test": ["chr3"]},
+                parameters={"in_window": 32, "out_window": 26}, mode="both",
+            )
+            for path in paths:
+                spec = json.loads(path.read_text())
+                run = root / "runs" / spec["name"]
+                run.mkdir(parents=True)
+                (run / f"{spec['name']}.torch").touch()
+                signals = [r["signal"] for r in spec["tracks"]]
+                (run / f"{spec['name']}.fit.json").write_text(json.dumps({
+                    "signals": signals, "in_window": 32, "out_window": 26,
+                }))
+                job = load_job(path, None)
+                self.assertEqual(job.signal_groups, spec["signal_groups"])
+                self.assertEqual([r["path"] for r in project_blocks(job)["tracks"]], signals)
+                if job.tracks[0] == "pair":
+                    self.assertEqual(job.track_records[0]["tag"], "x")
+
     def test_build_jobs_takes_resolved_arguments(self):
         from regseqkit.cherimoya.training import build_jobs
 

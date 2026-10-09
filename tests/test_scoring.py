@@ -5,7 +5,7 @@ import torch
 
 from regseqkit.design import Objective, WeightedObjective
 from regseqkit.scoring import ScalarScorer, ScoreModule
-from regseqkit.wrappers import Log1pToCounts, log1p_to_counts
+from regseqkit.inference import log1p_to_counts
 
 class ScoringTests(unittest.TestCase):
     def setUp(self):
@@ -16,8 +16,8 @@ class ScoringTests(unittest.TestCase):
     def test_conversion_and_gradients(self):
         values = torch.log1p(torch.tensor([[10., 4.], [3., 7.]])).requires_grad_()
         scorer = ScalarScorer([1., -1.])
-        module = ScoreModule(Log1pToCounts(torch.nn.Identity()), [scorer])
-        actual = module(values)
+        module = ScoreModule(torch.nn.Identity(), [scorer])
+        actual = module(log1p_to_counts(values))
         torch.testing.assert_close(actual, torch.tensor([[6.], [-4.]]))
         actual.sum().backward()
         torch.testing.assert_close(values.grad, values.detach().exp() * torch.tensor([1., -1.]))
