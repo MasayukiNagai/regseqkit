@@ -282,6 +282,10 @@ class Loci(NamedTuple):
     ----------
     onehot : torch.Tensor, shape (N, 4, in_window)
         CPU int8 one-hot sequences in ACGT order.
+    sequences : list[str]
+        The same windows as uppercase strings, as read from the FASTA. Kept so
+        callers that need text skip decoding, which would also turn every base
+        outside the alphabet into N.
     signals
         ``(N, tracks, out_window)`` signal, or None when no bigWigs were given.
     coords
@@ -290,6 +294,7 @@ class Loci(NamedTuple):
     """
 
     onehot: torch.Tensor
+    sequences: list[str]
     signals: np.ndarray | None
     coords: pd.DataFrame
 
@@ -495,6 +500,7 @@ def extract_loci_with_coords(
     surviving["source_row"] = rows
     return Loci(
         onehot=onehot[keep],
+        sequences=[s for s, k in zip(sequences, keep.tolist()) if k],
         signals=np.stack(signal_blocks)[keep.numpy()] if signal_blocks else None,
         coords=surviving,
     )

@@ -111,6 +111,7 @@ class SequenceAndArtifactTests(unittest.TestCase):
             self.assertIsInstance(extracted.onehot, torch.Tensor)
             self.assertEqual(extracted.onehot.dtype, torch.int8)
             self.assertEqual(OneHotEncoder().from_onehot(extracted.onehot), ["AAAA", "CCCC"])
+            self.assertEqual(extracted.sequences, ["AAAA", "CCCC"])
             self.assertEqual(extracted.coords.source_row.tolist(), [0, 2])
             self.assertIsNone(extracted.signals)
             templates = root / "templates.fa"
