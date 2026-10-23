@@ -31,8 +31,6 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.uv.sources]
-regseqkit = { path = "regseqkit", editable = true }
-torch = { index = "pytorch-cu126" }
 fast-logomaker = { git = "https://github.com/MasayukiNagai/fast-logomaker", tag = "combined-2026-10-07" }
 
 [tool.ruff]
