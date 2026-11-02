@@ -10,7 +10,14 @@ from tangermeme.saturation_mutagenesis import saturation_mutagenesis
 
 from regseqkit.calibrate import Calibration, resolve_percentile_targets, summarize_predictions
 from regseqkit.config import build_objectives, build_scorers
-from regseqkit.design import Objective, WeightedObjective, greedy_design, greedy_substitution, ledidi_design
+from regseqkit.design import (
+    Margin,
+    Objective,
+    WeightedObjective,
+    greedy_design,
+    greedy_substitution,
+    ledidi_design,
+)
 from regseqkit.mutagenesis import single_site_saturation_mutagenesis, ssm_attribution
 from regseqkit.scoring import ScalarScorer, ScoreModule
 
@@ -269,6 +276,64 @@ class GreedyTests(unittest.TestCase):
                                     on_iteration=records.append)
         self.assertEqual([r.mutation for r in records], ["0T>A", "1T>C", "0A>G"])
         self.assertEqual(result.argmax(1).tolist(), [[2, 1]])
+
+
+class MarginTests(unittest.TestCase):
+    def setUp(self):
+        previous = torch.get_num_threads()
+        self.addCleanup(torch.set_num_threads, previous)
+        torch.set_num_threads(1)
+        self.a, self.c, self.g = (ScalarScorer(w) for w in ([1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]))
+
+    def test_loss_is_the_worst_case_gap(self):
+        goal = Margin([self.a, self.c], [self.g])
+        self.assertEqual(goal.scorers, (self.a, self.c, self.g))
+        # Rows are a, c, g. One high scorer far above and one at zero sums to more
+        # than two moderate ones, but the margin ranks the moderate row first.
+        scores = torch.tensor([[10., 0., 1.], [4., 4., 1.], [5., 6., 7.]])
+        torch.testing.assert_close(goal(scores), torch.tensor([1., -3., 2.]))
+        self.assertEqual(str(goal), "margin(min of 2 high - max of 1 low)")
+
+    def test_gradient_reaches_only_the_extremes(self):
+        goal = Margin([self.a, self.c], [self.g, ScalarScorer([0, 0, 0, 1])])
+        scores = torch.tensor([[3., 1., 2., 5.]], requires_grad=True)
+        goal(scores).sum().backward()
+        torch.testing.assert_close(scores.grad, torch.tensor([[0., -1., 0., 1.]]))
+
+    def test_validation(self):
+        with self.assertRaisesRegex(ValueError, "at least one high and one low"):
+            Margin([], [self.g])
+        with self.assertRaisesRegex(ValueError, "at least one high and one low"):
+            Margin([self.a], [])
+        with self.assertRaisesRegex(ValueError, "both high and low"):
+            Margin([self.a, self.c], [self.c])
+        goal = Margin([self.a], [self.g])
+        for scores in (torch.zeros(3), torch.zeros(3, 3), torch.zeros(3, 2, 1)):
+            with self.subTest(shape=tuple(scores.shape)), self.assertRaisesRegex(ValueError, "expected \\(N, 2\\)"):
+                goal(scores)
+
+    def test_composes_with_weighted_objective(self):
+        goal = WeightedObjective((Margin([self.a, self.c], [self.g]), Objective(self.a, "max")), weights=(1, 2))
+        # The shared scorer keeps its first column.
+        self.assertEqual(goal.scorers, (self.a, self.c, self.g))
+        scores = torch.tensor([[4., 4., 1.]])
+        torch.testing.assert_close(goal(scores), torch.tensor([-3. + 2 * -4.]))
+
+    def test_greedy_raises_the_weakest_high_scorer(self):
+        X = template()
+        X[0, 3, 3], X[0, 0, 3] = 0, 1  # a = 4, c = 0, g = 0
+        goal = Margin([self.a, self.c], [self.g])
+        stack = ScoreModule(Counts(), goal.scorers)
+        records = []
+        result = greedy_substitution(stack, X, goal, positions=[0, 1, 2], max_iter=1, on_iteration=records.append)
+        # Raising a cannot help while c is zero; the best edit adds c at the heaviest site.
+        self.assertEqual(records[0].mutation, "2T>C")
+        self.assertEqual(float(goal(stack(result))[0]), -3)
+        # A weighted sum of the same two goals prefers a, the first of the tied edits.
+        summed = WeightedObjective((Objective(self.a, "max"), Objective(self.c, "max")))
+        stack = ScoreModule(Counts(), summed.scorers)
+        greedy_substitution(stack, X, summed, positions=[0, 1, 2], max_iter=1, on_iteration=records.append)
+        self.assertEqual(records[1].mutation, "2T>A")
 
 
 class ConfigurationTests(unittest.TestCase):

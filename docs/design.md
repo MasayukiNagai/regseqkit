@@ -168,6 +168,17 @@ score_module = ScoreModule(wrapped_model, objective.scorers)
 
 The resulting loss is the negative mean activity of the first two tracks plus a squared penalty for changing the third. The matching penalty makes this different from simply maximizing a linear contrast. The weights control the trade-off and depend on the score scales.
 
+To open a sequence in several tracks while keeping others closed, use `Margin`. Its loss is `-(min(high) - max(low))`, the weakest high scorer minus the strongest low scorer, so every high scorer has to rise above every low one. A weighted sum of maximize and minimize objectives averages instead, and is satisfied by raising one track while another stays low.
+
+```python
+from regseqkit.design import Margin
+
+objective = Margin(high=[scorer1, scorer2], low=[scorer3])
+score_module = ScoreModule(wrapped_model, objective.scorers)
+```
+
+The scorers are scored in the order `high` then `low`, which is `objective.scorers`. The margin is unbounded, so it keeps rewarding a wider gap beyond what real sequences reach; combine it with a `match` objective in a `WeightedObjective` when that matters. Only the current minimum and maximum scorers receive gradient.
+
 ```python
 designed = greedy_substitution(
     score_module,
