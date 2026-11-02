@@ -103,6 +103,69 @@ class Objective:
 
 
 @dataclass(frozen=True)
+class Margin:
+    """Worst-case gap between two groups of scorers.
+
+    The loss is ``-(min(high) - max(low))``: the weakest of the scorers that
+    should be high, minus the strongest of the scorers that should be low. It is
+    lowest when every ``high`` scorer is above every ``low`` scorer, and it is
+    set by the pair furthest from that, so a design cannot satisfy it by
+    raising one ``high`` scorer while another stays low. A weighted sum of
+    maximize and minimize objectives rewards that instead, because it averages.
+
+    Parameters
+    ----------
+    high : Sequence[Scorer]
+        Nonempty scorers that should be high.
+    low : Sequence[Scorer]
+        Nonempty scorers that should be low. A scorer cannot be in both groups.
+
+    Notes
+    -----
+    Scores arrive in the order ``high`` then ``low``, which is
+    ``Margin.scorers``. The loss is unbounded, so it keeps rewarding a wider gap
+    past anything the data supports; pair it with a ``match`` or bounded
+    objective when that matters. Gradient reaches only the scorers that are the
+    current minimum and maximum.
+    """
+
+    high: Sequence[Scorer]
+    low: Sequence[Scorer]
+    scorers: tuple[Scorer, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        high, low = tuple(self.high), tuple(self.low)
+        if not high or not low:
+            raise ValueError("a margin needs at least one high and one low scorer")
+        if {id(scorer) for scorer in high} & {id(scorer) for scorer in low}:
+            raise ValueError("a scorer cannot be both high and low")
+        object.__setattr__(self, "high", high)
+        object.__setattr__(self, "low", low)
+        object.__setattr__(self, "scorers", high + low)
+
+    def __call__(self, scores: torch.Tensor) -> torch.Tensor:
+        """Compute one loss per sequence.
+
+        Parameters
+        ----------
+        scores : torch.Tensor, shape (N, len(high) + len(low))
+            Score columns for the high scorers, then the low scorers.
+
+        Returns
+        -------
+        losses : torch.Tensor, shape (N,)
+            Lower-is-better losses, without a batch reduction.
+        """
+        if scores.ndim != 2 or scores.shape[1] != len(self.scorers):
+            raise ValueError(f"expected (N, {len(self.scorers)}) scores, got {tuple(scores.shape)}")
+        n_high = len(self.high)
+        return scores[:, n_high:].max(dim=1).values - scores[:, :n_high].min(dim=1).values
+
+    def __str__(self) -> str:
+        return f"margin(min of {len(self.high)} high - max of {len(self.low)} low)"
+
+
+@dataclass(frozen=True)
 class WeightedObjective:
     """Combine per-sequence losses from sub-objectives.
 
