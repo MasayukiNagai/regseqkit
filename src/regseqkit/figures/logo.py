@@ -24,7 +24,7 @@ def stack_attributions(attributions: Sequence[numpy.ndarray]) -> numpy.ndarray:
     """Center-pad ``(4, L)`` arrays of differing length into one ``(N, 4, L)``."""
     arrays = [numpy.asarray(a) for a in attributions]
     if any(a.ndim != 2 or a.shape[0] != 4 for a in arrays):
-        raise ValueError("each attribution must be a (4, length) array")
+        raise ValueError("each array must have shape (4, length)")
     width = max(a.shape[1] for a in arrays)
     stacked = numpy.zeros((len(arrays), 4, width), dtype=numpy.float32)
     for i, array in enumerate(arrays):
@@ -33,33 +33,16 @@ def stack_attributions(attributions: Sequence[numpy.ndarray]) -> numpy.ndarray:
     return stacked
 
 
-def _pad_sequences(sequences: Sequence[str], width: int, alphabet: Sequence[str]) -> list[str]:
-    """Upper-case and center-pad sequences with ``N`` to ``width``, as ``stack_attributions`` pads arrays."""
-    letters = {str(char).upper() for char in alphabet} | {"N"}
-    padded = []
-    for idx, sequence in enumerate(sequences):
-        sequence = str(sequence).upper()
-        if len(sequence) > width:
-            raise ValueError(f"sequence {idx} is {len(sequence)} bp but the logos are {width} wide")
-        unknown = set(sequence) - letters
-        if unknown:
-            raise ValueError(
-                f"sequence {idx} has letters {sorted(unknown)} outside the logo alphabet {list(alphabet)}"
-            )
-        left = (width - len(sequence)) // 2
-        padded.append("N" * left + sequence + "N" * (width - len(sequence) - left))
-    return padded
+def _fade_alternatives(logo: BatchLogo, one_hot: numpy.ndarray, alt_alpha: float) -> None:
+    """Scale the opacity of every glyph whose base is not set in ``one_hot`` by ``alt_alpha``.
 
-
-def _fade_alternatives(logo: BatchLogo, sequences: Sequence[str], alt_alpha: float) -> None:
-    """Scale the opacity of every glyph that is not the sequence's own base by ``alt_alpha``.
-
-    ``sequences`` are already padded to the logo width; ``N`` positions match no glyph,
-    so every letter there is faded.
+    ``one_hot`` has shape ``(N, A, L)`` in the logo's alphabet order; at an all-zero
+    column every letter is faded.
     """
-    for idx, sequence in enumerate(sequences):
+    row = {str(char): i for i, char in enumerate(logo.alphabet)}
+    for idx in range(one_hot.shape[0]):
         for glyph in logo.processed_logos[idx]["glyphs"]:
-            if glyph["char"].upper() != sequence[glyph["pos"]]:
+            if not one_hot[idx, row[glyph["char"]], glyph["pos"]]:
                 glyph["alpha"] *= alt_alpha
 
 
@@ -67,7 +50,7 @@ def plot_logos(
     attributions: numpy.ndarray | Sequence[numpy.ndarray],
     titles: Sequence[str] | None = None,
     *,
-    sequences: Sequence[str] | None = None,
+    ref_sequences: numpy.ndarray | Sequence[numpy.ndarray] | None = None,
     alt_alpha: float = 0.45,
     center_values: bool = False,
     figsize: tuple[float, float] = (18, 2.2),
@@ -83,13 +66,14 @@ def plot_logos(
     are center-padded to a common width. ``logo_kwargs`` override the shared
     ``LOGOMAKER_STYLE`` defaults and are forwarded to ``BatchLogo``.
 
-    ``sequences`` (one per logo) marks the wild-type base at each position: it is
-    drawn at full opacity and the other letters at ``alt_alpha``, which suits a
-    hypothetical attribution (for example mean-centred ISM) with all four bases
-    shown. Pass ``alt_alpha=1`` to skip the fading. Sequences shorter than the logo
-    width are center-padded with ``N`` like the attributions, and every letter at a
-    padded or ``N`` position is faded. The padded sequences are also passed to
-    ``BatchLogo``, so ``contribution=True`` works through ``logo_kwargs``.
+    ``ref_sequences`` is a one-hot encoding of each logo's reference sequence, in the
+    same ``(N, 4, L)`` layout as ``attributions`` (or a list of ``(4, L)`` arrays,
+    center-padded the same way). The reference base at each position is drawn at
+    full opacity and the other letters at ``alt_alpha``, which suits a hypothetical
+    attribution (for example mean-centred ISM) with all four bases shown. Every letter
+    at an all-zero column, such as padding, is faded. Pass ``alt_alpha=1`` to skip
+    the fading. The one-hot is also passed to ``BatchLogo``, so ``contribution=True``
+    works through ``logo_kwargs``.
     """
     if isinstance(attributions, (list, tuple)):
         attributions = stack_attributions(attributions)
@@ -97,8 +81,15 @@ def plot_logos(
     if attributions.ndim != 3 or attributions.shape[1] != 4:
         raise ValueError("attributions must have shape (N, 4, length)")
     n = attributions.shape[0]
-    if sequences is not None and len(sequences) != n:
-        raise ValueError(f"got {len(sequences)} sequences for {n} logos")
+    if ref_sequences is not None:
+        if isinstance(ref_sequences, (list, tuple)):
+            ref_sequences = stack_attributions(ref_sequences)
+        ref_sequences = numpy.asarray(ref_sequences)
+        if ref_sequences.shape != attributions.shape:
+            raise ValueError(
+                f"ref_sequences has shape {ref_sequences.shape} but attributions have "
+                f"shape {attributions.shape}"
+            )
     if not 0 <= alt_alpha <= 1:
         raise ValueError("alt_alpha must be in [0, 1]")
     if rows is None and cols is None:
@@ -119,13 +110,12 @@ def plot_logos(
         )
         | logo_kwargs
     )
-    if sequences is not None:
-        sequences = _pad_sequences(sequences, attributions.shape[2], options["alphabet"])
-        options["sequences"] = sequences
+    if ref_sequences is not None:
+        options["sequences"] = ref_sequences.transpose(0, 2, 1)
     logo = BatchLogo(attributions.transpose(0, 2, 1), **options)
     logo.process_all()
-    if sequences is not None and alt_alpha < 1:
-        _fade_alternatives(logo, sequences, alt_alpha)
+    if ref_sequences is not None and alt_alpha < 1:
+        _fade_alternatives(logo, ref_sequences, alt_alpha)
     fig, axes = logo.draw_logos(indices=list(range(n)), rows=rows, cols=cols)
     axes = numpy.asarray(axes, dtype=object).reshape(-1).tolist()
     for ax, title in zip(axes, titles or ()):
